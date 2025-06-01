@@ -10,9 +10,22 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, CalendarDays, UserCircle, Tag, Eye, Share2, MessageSquare, Edit3, Trash2 } from 'lucide-react';
+import { ArrowLeft, CalendarDays, UserCircle, Tag, Eye, Share2, MessageSquare, Edit3, Trash2, AlertTriangle, Copy } from 'lucide-react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { useToast } from '@/hooks/use-toast';
+import { deleteVideoAction } from './actions'; // To be created
 
 // A simple video player component
 const VideoPlayer = ({ src, type }: { src: string; type?: string }) => {
@@ -29,8 +42,10 @@ const VideoPlayer = ({ src, type }: { src: string; type?: string }) => {
 function VideoDetailPageContent({ videoId }: { videoId: string }) {
   const [video, setVideo] = useState<VideoMeta | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
   const { user, isAdmin } = useAuth();
   const router = useRouter();
+  const { toast } = useToast();
 
   useEffect(() => {
     if (videoId) {
@@ -48,6 +63,58 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
       fetchVideo();
     }
   }, [videoId]);
+
+  const handleShare = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: video?.title,
+          text: video?.description,
+          url: window.location.href,
+        });
+        toast({ title: "Shared successfully!" });
+      } catch (error) {
+        console.error("Error sharing:", error);
+        // Fallback to copy if share fails or is cancelled
+        copyLinkToClipboard();
+      }
+    } else {
+      copyLinkToClipboard();
+    }
+  };
+
+  const copyLinkToClipboard = () => {
+     navigator.clipboard.writeText(window.location.href)
+      .then(() => {
+        toast({ title: "Link Copied!", description: "Video link copied to clipboard." });
+      })
+      .catch(err => {
+        console.error("Failed to copy link:", err);
+        toast({ variant: "destructive", title: "Copy Failed", description: "Could not copy link to clipboard." });
+      });
+  }
+
+  const handleDeleteVideo = async () => {
+    if (!video || !video.storagePath || !video.thumbnailStoragePath) {
+      toast({ variant: "destructive", title: "Error", description: "Video data is incomplete for deletion." });
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      const result = await deleteVideoAction(videoId, video.storagePath, video.thumbnailStoragePath);
+      if (result.success) {
+        toast({ title: "Video Deleted", description: "The video has been successfully deleted." });
+        router.push('/videos'); // Redirect to videos list
+      } else {
+        throw new Error(result.error || "Failed to delete video.");
+      }
+    } catch (error) {
+      console.error("Failed to delete video:", error);
+      toast({ variant: "destructive", title: "Deletion Failed", description: error instanceof Error ? error.message : "An unknown error occurred." });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -77,8 +144,9 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
       </div>
     );
   }
-
-  const canEdit = isAdmin && user?.uid === video.doctorId;
+  
+  // Admin can edit/delete if they are an admin, regardless of who uploaded.
+  const canManage = isAdmin;
 
   return (
     <div className="container mx-auto py-8 max-w-4xl">
@@ -120,17 +188,36 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
 
           <div className="mt-6 flex flex-wrap gap-2 items-center justify-between">
             <div className="flex gap-2">
-              <Button variant="outline" size="sm" className="gap-1.5"><Share2 size={16}/> Share</Button>
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={handleShare}><Share2 size={16}/> Share</Button>
               <Button variant="outline" size="sm" className="gap-1.5"><MessageSquare size={16}/> Comment</Button>
             </div>
-            {canEdit && (
+            {canManage && (
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" className="gap-1.5 text-blue-600 border-blue-600 hover:bg-blue-50 hover:text-blue-700">
-                  <Edit3 size={16}/> Edit
+                <Button asChild variant="outline" size="sm" className="gap-1.5 text-blue-600 border-blue-600 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/30 dark:hover:text-blue-300">
+                  <Link href={`/admin/videos/edit/${video.id}`}><Edit3 size={16}/> Edit</Link>
                 </Button>
-                <Button variant="destructive" size="sm" className="gap-1.5">
-                  <Trash2 size={16}/> Delete
-                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" size="sm" className="gap-1.5">
+                      <Trash2 size={16}/> Delete
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle className="flex items-center gap-2"><AlertTriangle className="text-destructive"/>Are you absolutely sure?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This action cannot be undone. This will permanently delete the video
+                        "{video.title}" and all associated data from the servers.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={handleDeleteVideo} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
+                        {isDeleting ? "Deleting..." : "Yes, delete video"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             )}
           </div>
@@ -156,9 +243,6 @@ export default function VideoPage() {
   const videoId = params.id as string;
 
   return (
-    // Suspense can be used here if data fetching is done in a child server component
-    // For client-side fetching as above, Suspense isn't strictly necessary for the page itself
-    // but good for components that might fetch independently.
     <Suspense fallback={<div className="container mx-auto py-8 max-w-4xl"><Skeleton className="h-96 w-full" /></div>}>
       {videoId ? <VideoDetailPageContent videoId={videoId} /> : <p>Loading video...</p>}
     </Suspense>
