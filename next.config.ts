@@ -34,7 +34,13 @@ const nextConfig: NextConfig = {
         hostname: 'storage.googleapis.com', // Added for URLs like the one in the current error
         port: '',
         pathname: '/**', // Allows any path on this host, including /<bucket_name>/**
-      }
+      },
+      {
+        protocol: 'http', // Added for Replit dev server
+        hostname: 'c5ca8427-cd2b-4dd8-a4b4-f2d181791ac5-00-q34w2hbrdndv.spock.replit.dev',
+        port: '',
+        pathname: '/**',
+      },
     ],
   },
 };
