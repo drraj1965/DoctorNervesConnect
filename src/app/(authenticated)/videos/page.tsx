@@ -10,6 +10,23 @@ import Image from 'next/image';
 import { PlayCircle, Share2, MessageSquare, Eye } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 
+const PLACEHOLDER_IMAGE_URL = "https://placehold.co/600x400.png";
+
+const getSafeImageUrl = (url?: string | null): string => {
+  if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+    try {
+      // Attempt to parse to ensure it's a structurally valid URL
+      new URL(url);
+      return url;
+    } catch (e) {
+      // If parsing fails, it's not a valid URL
+      return PLACEHOLDER_IMAGE_URL;
+    }
+  }
+  return PLACEHOLDER_IMAGE_URL;
+};
+
+
 export default function VideosPage() {
   const [videos, setVideos] = useState<VideoMeta[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,12 +94,21 @@ export default function VideosPage() {
             <Link href={video.permalink || `/videos/${video.id}`} className="block group">
               <div className="relative w-full aspect-video">
                 <Image 
-                  src={video.thumbnailUrl || "https://placehold.co/600x400.png"} 
+                  src={getSafeImageUrl(video.thumbnailUrl)} 
                   alt={video.title} 
                   layout="fill" 
                   objectFit="cover"
                   className="group-hover:scale-105 transition-transform duration-300"
                   data-ai-hint="medical video thumbnail"
+                  onError={(e) => {
+                    // In case of an error even with a https URL (e.g. 404, network issue)
+                    // target an HTMLImageElement. We are using next/image which does not directly expose this.
+                    // We can set a state or re-render with placeholder if needed, but next/image handles some errors internally or via `blurDataURL`.
+                    // For simplicity, if getSafeImageUrl already returned placeholder, this won't run for that.
+                    // If it was a valid https that failed, this could log or try to set a component-level placeholder.
+                    console.warn(`Error loading image: ${video.thumbnailUrl}`);
+                    (e.target as HTMLImageElement).src = PLACEHOLDER_IMAGE_URL; // Fallback for direct img, less effective for next/image
+                  }}
                 />
                 <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                   <PlayCircle className="w-16 h-16 text-white" />
