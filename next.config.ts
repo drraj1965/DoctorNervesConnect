@@ -25,9 +25,15 @@ const nextConfig: NextConfig = {
       },
       {
         protocol: 'https',
-        hostname: 'doctornerves.firebasestorage.app', // As per error message, to be safe
+        hostname: 'doctornerves.firebasestorage.app', // As per a previous error message
         port: '',
         pathname: '/**',
+      },
+      {
+        protocol: 'https',
+        hostname: 'storage.googleapis.com', // Added for URLs like the one in the current error
+        port: '',
+        pathname: '/**', // Allows any path on this host, including /<bucket_name>/**
       }
     ],
   },
