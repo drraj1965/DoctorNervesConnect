@@ -9,10 +9,11 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Progress } from '@/components/ui/progress';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
 import { uploadFileToStorage, getFirebaseStorageDownloadUrl } from '@/lib/firebase/storage';
 import { addVideoMetadataToFirestore } from './actions'; // Server action
-import { Video, Mic, Square, Play, Download, UploadCloud, AlertCircle, CheckCircle, Loader2, Settings2 } from 'lucide-react';
+import { Video, Mic, Square, Play, Download, UploadCloud, AlertCircle, CheckCircle, Loader2, Settings2, Camera } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import type { VideoMeta } from '@/types';
 import { useRouter } from 'next/navigation';
@@ -75,7 +76,7 @@ export default function VideoRecorder() {
       setRecordingState('idle'); // Ready to record
     } catch (err) {
       console.error("Error accessing media devices:", err);
-      setError("Failed to access camera/microphone. Please check permissions.");
+      setError("Failed to access camera/microphone. Please check permissions and ensure your browser supports media recording.");
       setRecordingState('error');
     }
   };
@@ -88,14 +89,13 @@ export default function VideoRecorder() {
     
     if (mediaStreamRef.current && mediaRecorderRef.current?.state !== 'recording') {
       setError(null);
-      setRecordedChunksRef([]); // Clear previous recording chunks
+      recordedChunksRef.current = []; // Correctly clear previous recording chunks
       setRecordedVideoBlob(null);
       if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
       setRecordedVideoUrl(null);
       setThumbnailBlob(null);
       setDuration(0);
 
-      // Determine MIME type
       const options = { mimeType: 'video/webm; codecs=vp9,opus' };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) {
         console.warn(`${options.mimeType} is not supported, trying default.`);
@@ -107,7 +107,7 @@ export default function VideoRecorder() {
         mediaRecorderRef.current = new MediaRecorder(mediaStreamRef.current, options);
       } catch (e) {
         console.error("Error creating MediaRecorder:", e);
-        setError("Could not start recording. Browser may not support chosen format.");
+        setError("Could not start recording. Browser may not support chosen format or camera/mic is already in use.");
         setRecordingState('error');
         return;
       }
@@ -125,7 +125,7 @@ export default function VideoRecorder() {
         setRecordedVideoUrl(url);
         setRecordingState('stopped');
         if (videoPreviewRef.current) {
-          videoPreviewRef.current.srcObject = null; // Stop live preview
+          videoPreviewRef.current.srcObject = null; 
           videoPreviewRef.current.src = url;
           videoPreviewRef.current.controls = true;
           videoPreviewRef.current.onloadedmetadata = () => {
@@ -138,7 +138,7 @@ export default function VideoRecorder() {
       
       mediaRecorderRef.current.onerror = (event) => {
         console.error("MediaRecorder error:", event);
-        setError("An error occurred during recording.");
+        setError("An error occurred during recording. Please try again.");
         setRecordingState('error');
          if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       };
@@ -146,14 +146,13 @@ export default function VideoRecorder() {
       mediaRecorderRef.current.start();
       setRecordingState('recording');
       
-      // Start timer
       let seconds = 0;
       recordingTimerRef.current = setInterval(() => {
         seconds++;
         setDuration(seconds);
         if (seconds * 1000 >= MAX_RECORDING_TIME_MS) {
           stopRecording();
-           setError("Maximum recording time reached.");
+           setError("Maximum recording time reached (30 minutes).");
         }
       }, 1000);
     }
@@ -162,7 +161,6 @@ export default function VideoRecorder() {
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
-      // Stream stop is handled by stopMediaStream or when component unmounts
     }
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
   };
@@ -178,28 +176,39 @@ export default function VideoRecorder() {
   }
 
   const generateThumbnail = (videoUrl: string) => {
-    const video = document.createElement('video');
-    video.src = videoUrl;
-    video.onloadeddata = () => {
+    const videoElement = document.createElement('video');
+    videoElement.src = videoUrl;
+    videoElement.currentTime = 1; // Seek to 1 second to ensure a frame is loaded
+    videoElement.onloadeddata = () => {
       const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth / 4; // Smaller thumbnail
-      canvas.height = video.videoHeight / 4;
+      // Create a slightly higher resolution thumbnail, then scale down if needed for display
+      const targetWidth = Math.min(videoElement.videoWidth, 640); 
+      const scaleFactor = targetWidth / videoElement.videoWidth;
+      canvas.width = targetWidth;
+      canvas.height = videoElement.videoHeight * scaleFactor;
+
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
         canvas.toBlob((blob) => {
           if (blob) setThumbnailBlob(blob);
-        }, 'image/jpeg', 0.8);
+        }, 'image/jpeg', 0.85); // Slightly higher quality for thumbnail
       }
-      video.remove(); // Clean up video element
+      videoElement.remove(); 
     };
+    videoElement.onerror = () => {
+        console.error("Error loading video for thumbnail generation.");
+        videoElement.remove();
+    }
   };
 
   const handleSaveLocally = () => {
-    if (recordedVideoBlob) {
+    if (recordedVideoBlob && recordedVideoUrl) {
       const a = document.createElement('a');
-      a.href = recordedVideoUrl!;
-      a.download = `${title.replace(/\s+/g, '_') || 'recorded_video'}.webm`; // Consider actual mimeType
+      a.href = recordedVideoUrl;
+      const safeTitle = title.replace(/[^a-z0-9_]+/gi, '_').toLowerCase() || 'recorded_video';
+      const extension = recordedVideoBlob.type.split('/')[1] || 'webm';
+      a.download = `${safeTitle}.${extension}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -209,7 +218,7 @@ export default function VideoRecorder() {
   const handleUpload = async (event: FormEvent) => {
     event.preventDefault();
     if (!recordedVideoBlob || !thumbnailBlob || !user || !doctorProfile) {
-      setError("Missing video data, thumbnail, or user information.");
+      setError("Missing video data, thumbnail, or user information. Please ensure recording is complete.");
       return;
     }
     if (!title.trim()) {
@@ -223,8 +232,11 @@ export default function VideoRecorder() {
     setUploadProgress(0);
 
     try {
-      const videoFileName = `${title.replace(/\s+/g, '_')}_${Date.now()}.webm`; // or based on blob.type
-      const thumbnailFileName = `thumbnail_${videoFileName.split('.')[0]}.jpg`;
+      const safeTitle = title.replace(/[^a-z0-9_]+/gi, '_').toLowerCase();
+      const timestamp = Date.now();
+      const videoExtension = recordedVideoBlob.type.split('/')[1] || 'webm';
+      const videoFileName = `${safeTitle}_${timestamp}.${videoExtension}`;
+      const thumbnailFileName = `thumbnail_${safeTitle}_${timestamp}.jpg`;
 
       const videoStoragePath = await uploadFileToStorage(
         `videos/${doctorProfile.uid}`,
@@ -232,7 +244,7 @@ export default function VideoRecorder() {
         videoFileName,
         (snapshot) => {
           const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          setUploadProgress(progress * 0.9); // Video is 90% of progress
+          setUploadProgress(progress * 0.9); 
         }
       );
       const videoUrl = await getFirebaseStorageDownloadUrl(videoStoragePath);
@@ -245,7 +257,7 @@ export default function VideoRecorder() {
         thumbnailFileName,
          (snapshot) => {
           const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          setUploadProgress(90 + (progress * 0.1)); // Thumbnail is 10%
+          setUploadProgress(90 + (progress * 0.1)); 
         }
       );
       const thumbnailUrl = await getFirebaseStorageDownloadUrl(thumbnailStoragePath);
@@ -274,13 +286,12 @@ export default function VideoRecorder() {
 
       setSuccessMessage("Video uploaded and metadata saved successfully!");
       setRecordingState('success');
-      // Reset form and state for next recording
       setTitle(''); setDescription(''); setKeywords(''); setFeatured(false);
       setRecordedVideoBlob(null); setRecordedVideoUrl(null); setThumbnailBlob(null);
       setDuration(0);
-      stopMediaStream(); // Stop camera after successful upload
+      stopMediaStream(); 
       if (videoPreviewRef.current) {
-        videoPreviewRef.current.src = ""; // Clear preview
+        videoPreviewRef.current.src = ""; 
         videoPreviewRef.current.srcObject = null;
         videoPreviewRef.current.controls = false;
       }
@@ -294,96 +305,108 @@ export default function VideoRecorder() {
     }
   };
   
-  if (!isAdmin && typeof window !== 'undefined') {
-    return <p>Access denied. You must be an admin to view this page.</p>;
+  if (!isAdmin && typeof window !== 'undefined' && !user) { // Check for user as well to avoid flicker
+    return <p>Loading...</p>; // Or a loader component
+  }
+  if (!isAdmin && typeof window !== 'undefined' && user) {
+     return <p>Access denied. You must be an admin to view this page.</p>;
   }
 
 
   return (
     <div className="space-y-6">
       {error && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="w-full">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
       {successMessage && (
-        <Alert variant="default" className="bg-green-100 border-green-300 text-green-700">
+        <Alert variant="default" className="w-full bg-green-50 border-green-300 text-green-700 dark:bg-green-900/30 dark:border-green-700 dark:text-green-300">
           <CheckCircle className="h-4 w-4" />
           <AlertTitle>Success</AlertTitle>
           <AlertDescription>{successMessage}</AlertDescription>
         </Alert>
       )}
 
-      <div className="aspect-video bg-muted rounded-md overflow-hidden border relative">
-        <video ref={videoPreviewRef} className="w-full h-full object-cover" autoPlay muted playsInline />
+      <div className="aspect-video bg-muted rounded-lg overflow-hidden border shadow-inner relative">
+        <video ref={videoPreviewRef} className="w-full h-full object-contain bg-black" autoPlay muted playsInline />
         {recordingState === 'recording' && (
-          <div className="absolute top-2 right-2 bg-red-500 text-white px-2 py-1 rounded text-sm font-mono">
-            REC {formatTime(duration)}
+          <div className="absolute top-3 right-3 bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-mono shadow-md flex items-center gap-1.5">
+            <Mic size={16} /> REC {formatTime(duration)}
           </div>
         )}
+         {recordingState === 'idle' && !mediaStreamRef.current && (
+           <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
+             <Camera size={48} className="text-muted-foreground mb-4" />
+             <p className="text-muted-foreground mb-4">Camera and microphone access needed to record.</p>
+             <Button onClick={requestPermissionsAndSetup} variant="default" size="lg" className="gap-2">
+               <Settings2 className="h-5 w-5" /> Setup Camera & Mic
+             </Button>
+           </div>
+         )}
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-2 items-center justify-center">
-        {!mediaStreamRef.current && recordingState === 'idle' && (
-           <Button onClick={requestPermissionsAndSetup} variant="outline" className="gap-2">
-             <Settings2 className="h-4 w-4" /> Setup Camera & Mic
-           </Button>
-        )}
+      <div className="flex flex-col sm:flex-row gap-3 items-center justify-center">
         {mediaStreamRef.current && (recordingState === 'idle' || recordingState === 'stopped') && (
-          <Button onClick={startRecording} className="gap-2 bg-green-600 hover:bg-green-700">
-            <Video className="h-4 w-4" /> Start Recording
+          <Button onClick={startRecording} className="gap-2 bg-green-600 hover:bg-green-700 text-white w-full sm:w-auto" size="lg">
+            <Video className="h-5 w-5" /> Start Recording
           </Button>
         )}
         {recordingState === 'recording' && (
-          <Button onClick={stopRecording} variant="destructive" className="gap-2">
-            <Square className="h-4 w-4" /> Stop Recording
+          <Button onClick={stopRecording} variant="destructive" className="gap-2 w-full sm:w-auto" size="lg">
+            <Square className="h-5 w-5" /> Stop Recording
           </Button>
         )}
       </div>
 
       {recordedVideoUrl && recordingState === 'stopped' && (
-        <div className="mt-4 p-4 border rounded-md bg-secondary/30">
-          <h3 className="text-lg font-semibold mb-2">Recording Complete (Duration: {formatTime(duration)})</h3>
-          <p className="text-sm text-muted-foreground mb-3">Review your video below. You can save it locally or proceed to upload.</p>
-          <form onSubmit={handleUpload} className="space-y-4">
-            <div>
-              <Label htmlFor="title">Video Title <span className="text-red-500">*</span></Label>
-              <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} required placeholder="Enter a catchy title" />
-            </div>
-            <div>
-              <Label htmlFor="description">Description</Label>
-              <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Describe your video..." />
-            </div>
-            <div>
-              <Label htmlFor="keywords">Keywords (comma-separated)</Label>
-              <Input id="keywords" value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="e.g., cardiology, heart health, exercise" />
-            </div>
-            <div className="flex items-center space-x-2">
-              <Checkbox id="featured" checked={featured} onCheckedChange={(checked) => setFeatured(!!checked)} />
-              <Label htmlFor="featured">Feature this video on Homepage</Label>
-            </div>
-            <div className="flex flex-col sm:flex-row gap-3 pt-2">
-              <Button type="button" onClick={handleSaveLocally} variant="outline" className="gap-2">
-                <Download className="h-4 w-4" /> Save Locally
-              </Button>
-              <Button type="submit" disabled={recordingState === 'uploading'} className="gap-2 flex-grow">
-                {recordingState === 'uploading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                {recordingState === 'uploading' ? 'Uploading...' : 'Upload Video'}
-              </Button>
-            </div>
-          </form>
-        </div>
+        <Card className="shadow-xl">
+          <CardHeader>
+            <CardTitle className="text-xl font-headline">Recording Complete</CardTitle>
+            <CardDescription>Duration: {formatTime(duration)}. Review your video and provide details before uploading.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleUpload} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="title">Video Title <span className="text-destructive">*</span></Label>
+                <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} required placeholder="e.g., Understanding Blood Pressure" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="description">Description</Label>
+                <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Summarize the video content, key topics covered..." rows={4} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="keywords">Keywords (comma-separated)</Label>
+                <Input id="keywords" value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="e.g., cardiology, hypertension, lifestyle" />
+              </div>
+              <div className="flex items-center space-x-2 pt-2">
+                <Checkbox id="featured" checked={featured} onCheckedChange={(checked) => setFeatured(!!checked)} />
+                <Label htmlFor="featured" className="font-normal text-sm">Feature this video on Homepage</Label>
+              </div>
+            </form>
+          </CardContent>
+          <CardFooter className="flex flex-col sm:flex-row gap-3 pt-4 border-t">
+            <Button type="button" onClick={handleSaveLocally} variant="outline" className="gap-2 w-full sm:w-auto">
+              <Download className="h-4 w-4" /> Save Locally
+            </Button>
+            <Button type="submit" form="upload-form" onClick={handleUpload} disabled={recordingState === 'uploading'} className="gap-2 flex-grow w-full sm:w-auto">
+              {recordingState === 'uploading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+              {recordingState === 'uploading' ? 'Uploading...' : 'Upload Video'}
+            </Button>
+          </CardFooter>
+        </Card>
       )}
       
       {recordingState === 'uploading' && (
-        <div className="mt-4">
-          <Progress value={uploadProgress} className="w-full" />
-          <p className="text-sm text-center mt-2 text-muted-foreground">Uploading... {Math.round(uploadProgress)}%</p>
+        <div className="mt-4 p-4 border rounded-lg bg-card">
+          <Progress value={uploadProgress} className="w-full h-2.5" />
+          <p className="text-sm text-center mt-2.5 text-muted-foreground">Uploading video... {Math.round(uploadProgress)}%</p>
         </div>
       )}
     </div>
   );
 }
 
+    

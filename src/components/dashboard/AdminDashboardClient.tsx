@@ -8,6 +8,7 @@ import { Video, Users, FileText, MessageSquare } from 'lucide-react';
 import { getVideosCount } from '@/lib/firebase/firestore';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function AdminDashboardClient() {
   const [videoCount, setVideoCount] = useState<number | string>("...");
@@ -73,9 +74,4 @@ export default function AdminDashboardClient() {
   );
 }
 
-// Dummy Card components if not imported from ui
-const Card = ({ className, children }: {className?: string, children: React.ReactNode}) => <div className={`bg-card text-card-foreground border rounded-lg ${className}`}>{children}</div>;
-const CardHeader = ({ className, children }: {className?: string, children: React.ReactNode}) => <div className={`p-6 ${className}`}>{children}</div>;
-const CardTitle = ({ className, children }: {className?: string, children: React.ReactNode}) => <h3 className={`font-semibold text-xl ${className}`}>{children}</h3>;
-const CardContent = ({ className, children }: {className?: string, children: React.ReactNode}) => <div className={`p-6 pt-0 ${className}`}>{children}</div>;
-
+    
