@@ -1,23 +1,23 @@
+
 import type { User as FirebaseUser } from 'firebase/auth';
 
 export interface UserProfile extends FirebaseUser {
-  // Extend with custom properties if needed in the future
-  // e.g. gender, dateOfBirth
-  role?: 'patient' | 'doctor'; // Simplified role
+  role?: 'patient' | 'doctor';
 }
 
 export interface DoctorProfile extends UserProfile {
   specialization?: string;
-  // other doctor-specific fields
 }
 
 export interface VideoComment {
-  id: string;
+  id: string; // Unique ID for the comment
   userId: string;
   userName: string;
+  userPhotoUrl?: string; // Optional: for displaying avatar
   text: string;
   createdAt: string; // ISO date string
-  replies?: VideoComment[];
+  parentId?: string | null; // For threading/replies
+  replies?: VideoComment[]; // For nested display, though direct array update in Firestore is hard
 }
 
 export interface VideoMeta {
@@ -28,42 +28,40 @@ export interface VideoMeta {
   doctorName: string;
   videoUrl: string;
   thumbnailUrl: string;
-  duration: string; // e.g., "00:12:34"
-  recordingDuration?: number; // in seconds
+  duration: string; 
+  recordingDuration?: number; 
   tags: string[];
-  createdAt: string; // ISO date string
+  createdAt: string; 
   viewCount: number;
   featured: boolean;
   permalink: string;
-  storagePath: string; // path in Firebase Storage for video file
-  thumbnailStoragePath: string; // path for thumbnail
-  videoSize?: number; // in bytes
-  videoType?: string; // e.g. "video/webm"
+  storagePath: string; 
+  thumbnailStoragePath: string; 
+  videoSize?: number; 
+  videoType?: string; 
   comments?: VideoComment[];
 }
 
 export interface Article {
   id: string;
   title: string;
-  content: string; // Could be markdown or rich text
+  content: string; 
   doctorId: string;
   doctorName: string;
   tags: string[];
-  createdAt: string; // ISO date string
-  updatedAt?: string; // ISO date string
+  createdAt: string; 
+  updatedAt?: string; 
   isPublished: boolean;
-  // comments, shares, etc.
 }
 
 export interface Question {
   id: string;
   patientId: string;
-  patientName: string; // Consider privacy, maybe anonymous option
-  doctorId: string; // ID of the doctor question is addressed to
+  patientName: string; 
+  doctorId: string; 
   questionText: string;
   answerText?: string;
   isAnswered: boolean;
-  createdAt: string; // ISO date string
-  answeredAt?: string; // ISO date string
-  // conversations
+  createdAt: string; 
+  answeredAt?: string; 
 }

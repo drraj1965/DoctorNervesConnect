@@ -1,3 +1,4 @@
+
 import { db } from "./config";
 import {
   collection,
@@ -8,33 +9,39 @@ import {
   query,
   orderBy,
   limit,
-  Timestamp, // Import Timestamp
+  Timestamp, 
   where,
   getCountFromServer,
   serverTimestamp,
   setDoc,
   deleteDoc,
+  updateDoc, // Added updateDoc
 } from "firebase/firestore";
 import type { VideoMeta, DoctorProfile } from "@/types";
 
-// Helper function to safely convert createdAt to ISO string
 const getSafeCreatedAtISO = (createdAtValue: any): string => {
+  if (!createdAtValue) {
+    return new Date().toISOString(); // Fallback if createdAt is null/undefined
+  }
   if (createdAtValue instanceof Timestamp) {
     return createdAtValue.toDate().toISOString();
   }
   if (typeof createdAtValue === 'string') {
-    // Potentially validate if it's a valid ISO string, but for now, assume it is
-    return createdAtValue;
+    // Attempt to parse and re-format to ensure it's a valid ISO string
+    try {
+      return new Date(createdAtValue).toISOString();
+    } catch (e) {
+      // If parsing fails, return current date as fallback
+      return new Date().toISOString();
+    }
   }
   if (createdAtValue && typeof createdAtValue === 'object' && 'seconds' in createdAtValue && 'nanoseconds' in createdAtValue) {
-    // Handle plain object representation of Timestamp
     return new Timestamp(createdAtValue.seconds, createdAtValue.nanoseconds).toDate().toISOString();
   }
-  // Fallback or if it's an older structure that might just be a Date object (less likely from serverTimestamp)
   if (createdAtValue instanceof Date) {
     return createdAtValue.toISOString();
   }
-  return new Date().toISOString(); // Default fallback
+  return new Date().toISOString(); 
 };
 
 
@@ -43,16 +50,39 @@ export const addVideoMetadata = async (videoData: Omit<VideoMeta, 'id' | 'create
     const docRef = await addDoc(collection(db, "videos"), {
       ...videoData,
       createdAt: serverTimestamp(),
+      comments: videoData.comments || [], // Ensure comments is an array
     });
-    // Update permalink after getting ID
     const permalink = `/videos/${docRef.id}`;
-    await setDoc(doc(db, "videos", docRef.id), { permalink }, { merge: true });
+    await setDoc(doc(db, "videos", docRef.id), { permalink, id: docRef.id }, { merge: true });
     return docRef.id;
   } catch (error) {
     console.error("Error adding video metadata: ", error);
     throw error;
   }
 };
+
+export const updateVideoMetadata = async (videoId: string, dataToUpdate: Partial<VideoMeta>): Promise<void> => {
+  try {
+    const videoDocRef = doc(db, "videos", videoId);
+    // Ensure createdAt is not overwritten if not explicitly provided or is a serverTimestamp
+    const { createdAt, ...restOfData } = dataToUpdate;
+    let updatePayload: any = restOfData;
+    if (createdAt && typeof createdAt === 'object' && 'toDate' in createdAt) { // Check if it's a Timestamp-like object
+        // If we want to allow updating createdAt (usually not recommended unless specific reason)
+        // updatePayload.createdAt = createdAt; 
+    } else if (typeof createdAt === 'string') {
+        // updatePayload.createdAt = Timestamp.fromDate(new Date(createdAt));
+    }
+    // Generally, avoid updating createdAt directly after creation unless for specific migration tasks.
+    // For most updates, createdAt should remain as is.
+
+    await updateDoc(videoDocRef, updatePayload);
+  } catch (error) {
+    console.error("Error updating video metadata: ", error);
+    throw error;
+  }
+};
+
 
 export const getVideosCount = async (): Promise<number> => {
   try {
@@ -80,12 +110,13 @@ export const getRecentVideos = async (days: number, countLimit: number = 5): Pro
     );
     const querySnapshot = await getDocs(q);
     const videos: VideoMeta[] = [];
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
       videos.push({ 
-        id: doc.id,
+        id: docSnap.id,
         ...data,
         createdAt: getSafeCreatedAtISO(data.createdAt),
+        comments: data.comments || [],
        } as VideoMeta);
     });
     return videos;
@@ -101,12 +132,13 @@ export const getAllVideos = async (): Promise<VideoMeta[]> => {
     const q = query(videosCollection, orderBy("createdAt", "desc"));
     const querySnapshot = await getDocs(q);
     const videos: VideoMeta[] = [];
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
+    querySnapshot.forEach((docSnap) => {
+      const data = docSnap.data();
       videos.push({ 
-        id: doc.id,
+        id: docSnap.id,
         ...data,
         createdAt: getSafeCreatedAtISO(data.createdAt),
+        comments: data.comments || [],
        } as VideoMeta);
     });
     return videos;
@@ -126,6 +158,7 @@ export const getVideoById = async (id: string): Promise<VideoMeta | null> => {
         id: docSnap.id, 
         ...data,
         createdAt: getSafeCreatedAtISO(data.createdAt),
+        comments: data.comments || [],
       } as VideoMeta;
     }
     return null;

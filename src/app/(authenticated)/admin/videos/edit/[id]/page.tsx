@@ -1,11 +1,183 @@
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+"use client";
+
+import { useEffect, useState, FormEvent, ChangeEvent } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from '@/components/ui/textarea';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import Image from 'next/image';
+import { ArrowLeft, UploadCloud, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
+import { getVideoById, updateVideoMetadata } from "@/lib/firebase/firestore"; // updateVideoMetadata needs to be created/adapted
+import type { VideoMeta } from "@/types";
+import { useToast } from '@/hooks/use-toast';
+import { updateVideoThumbnailAction } from './actions'; // Server action for thumbnail
+
+// Placeholder for updateVideoMetadata (general metadata like title, desc)
+async function updateVideoDetailsAction(videoId: string, data: Partial<Pick<VideoMeta, 'title' | 'description' | 'tags' | 'featured'>>) {
+    // This is a simplified placeholder. In a real app, you'd have a robust server action.
+    try {
+        await updateVideoMetadata(videoId, data); // Assuming updateVideoMetadata exists and works
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : "Unknown error updating details." };
+    }
+}
+
 
 export default function EditVideoPage({ params }: { params: { id: string } }) {
   const videoId = params.id;
+  const router = useRouter();
+  const { toast } = useToast();
+
+  const [video, setVideo] = useState<VideoMeta | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Form states
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [tags, setTags] = useState('');
+  const [featured, setFeatured] = useState(false);
+  const [newThumbnailFile, setNewThumbnailFile] = useState<File | null>(null);
+  const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null);
+  
+  const [isUpdatingDetails, setIsUpdatingDetails] = useState(false);
+  const [isUpdatingThumbnail, setIsUpdatingThumbnail] = useState(false);
+
+  useEffect(() => {
+    if (videoId) {
+      const fetchVideo = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+          const fetchedVideo = await getVideoById(videoId as string);
+          if (fetchedVideo) {
+            setVideo(fetchedVideo);
+            setTitle(fetchedVideo.title);
+            setDescription(fetchedVideo.description);
+            setTags(fetchedVideo.tags.join(', '));
+            setFeatured(fetchedVideo.featured);
+            setThumbnailPreview(fetchedVideo.thumbnailUrl);
+          } else {
+            setError("Video not found.");
+          }
+        } catch (err) {
+          console.error("Failed to fetch video:", err);
+          setError("Failed to load video data.");
+        } finally {
+          setLoading(false);
+        }
+      };
+      fetchVideo();
+    }
+  }, [videoId]);
+
+  const handleThumbnailChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setNewThumbnailFile(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setThumbnailPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleUpdateThumbnail = async () => {
+    if (!newThumbnailFile || !video) {
+      toast({ variant: "destructive", title: "No new thumbnail selected." });
+      return;
+    }
+    setIsUpdatingThumbnail(true);
+    setError(null);
+    try {
+      const result = await updateVideoThumbnailAction(videoId, newThumbnailFile, video.thumbnailStoragePath);
+      if (result.success && result.newThumbnailUrl) {
+        toast({ title: "Thumbnail Updated", description: "The video thumbnail has been successfully updated." });
+        setVideo(prev => prev ? { ...prev, thumbnailUrl: result.newThumbnailUrl! } : null);
+        setThumbnailPreview(result.newThumbnailUrl); // Update preview with the actual new URL
+        setNewThumbnailFile(null); // Reset file input
+      } else {
+        throw new Error(result.error || "Failed to update thumbnail.");
+      }
+    } catch (err) {
+      console.error("Failed to update thumbnail:", err);
+      setError(err instanceof Error ? err.message : "An unknown error occurred.");
+      toast({ variant: "destructive", title: "Update Failed", description: err instanceof Error ? err.message : "Could not update thumbnail." });
+    } finally {
+      setIsUpdatingThumbnail(false);
+    }
+  };
+  
+  const handleUpdateDetails = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!video) return;
+    setIsUpdatingDetails(true);
+    setError(null);
+    try {
+        const updatedData = {
+            title,
+            description,
+            tags: tags.split(',').map(t => t.trim()).filter(Boolean),
+            featured
+        };
+        // In a real app, this would be a server action:
+        // const result = await updateVideoDetailsAction(videoId, updatedData);
+        // For now, simulate calling Firestore directly (not ideal from client but matches existing pattern for getVideoById)
+        await updateDoc(doc(db, "videos", videoId), updatedData); 
+        revalidatePath(`/videos/${videoId}`);
+        revalidatePath(`/admin/videos/edit/${videoId}`);
+
+        toast({ title: "Video Details Updated", description: "The video metadata has been saved." });
+        setVideo(prev => prev ? { ...prev, ...updatedData, tags: updatedData.tags } : null);
+    } catch (err) {
+        console.error("Failed to update video details:", err);
+        setError(err instanceof Error ? err.message : "An unknown error occurred while saving details.");
+        toast({ variant: "destructive", title: "Update Failed", description: err instanceof Error ? err.message : "Could not save video details." });
+    } finally {
+        setIsUpdatingDetails(false);
+    }
+  };
+
+
+  if (loading) {
+    return (
+      <div className="container mx-auto py-8">
+        <Skeleton className="h-8 w-32 mb-4" /> 
+        <Card>
+          <CardHeader><Skeleton className="h-7 w-1/2" /></CardHeader>
+          <CardContent className="space-y-4">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-40 w-1/3" />
+            <Skeleton className="h-10 w-1/4" />
+          </CardContent>
+          <CardFooter><Skeleton className="h-10 w-24" /></CardFooter>
+        </Card>
+      </div>
+    );
+  }
+
+  if (error && !video) {
+    return (
+      <div className="container mx-auto py-8 text-center">
+        <Alert variant="destructive"><AlertCircle className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>
+        <Button onClick={() => router.back()} variant="outline" className="mt-4">Go Back</Button>
+      </div>
+    );
+  }
+  
+  if (!video) {
+     return <div className="container mx-auto py-8 text-center"><p>Video data could not be loaded.</p></div>;
+  }
 
   return (
     <div className="container mx-auto py-8">
@@ -16,22 +188,77 @@ export default function EditVideoPage({ params }: { params: { id: string } }) {
       </Link>
       <Card>
         <CardHeader>
-          <CardTitle className="text-2xl font-headline">Edit Video: {videoId}</CardTitle>
+          <CardTitle className="text-2xl font-headline">Edit Video: {video.title}</CardTitle>
           <CardDescription>
-            This page will allow administrators to edit the metadata for the video.
-            Functionality to modify title, description, tags, and other details will be available here.
+            Modify the video's metadata and thumbnail.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">Video editing form is under development.</p>
-          {/* 
-            TODO: 
-            1. Fetch video data using videoId.
-            2. Create a form (similar to VideoRecorder metadata form) pre-filled with video data.
-            3. Implement a server action to update video metadata in Firestore.
-          */}
+        <CardContent className="space-y-8">
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Error</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <form onSubmit={handleUpdateDetails} id="video-details-form" className="space-y-4">
+            <div>
+              <Label htmlFor="title">Title <span className="text-destructive">*</span></Label>
+              <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} required />
+            </div>
+            <div>
+              <Label htmlFor="description">Description</Label>
+              <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} rows={5} />
+            </div>
+            <div>
+              <Label htmlFor="tags">Tags (comma-separated)</Label>
+              <Input id="tags" value={tags} onChange={(e) => setTags(e.target.value)} />
+            </div>
+            <div className="flex items-center space-x-2 pt-2">
+                <Checkbox id="featured" checked={featured} onCheckedChange={(checked) => setFeatured(!!checked)} />
+                <Label htmlFor="featured" className="font-normal text-sm">Feature this video on Homepage</Label>
+            </div>
+             <Button type="submit" disabled={isUpdatingDetails} className="w-full sm:w-auto">
+                {isUpdatingDetails ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Save Details
+            </Button>
+          </form>
+
+          <div className="space-y-4 border-t pt-6">
+            <h3 className="text-lg font-medium">Update Thumbnail</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+                <div>
+                    <Label htmlFor="thumbnail">New Thumbnail File</Label>
+                    <Input id="thumbnail" type="file" accept="image/*" onChange={handleThumbnailChange} className="mt-1" />
+                    {newThumbnailFile && <p className="text-xs text-muted-foreground mt-1">Selected: {newThumbnailFile.name}</p>}
+                </div>
+                {thumbnailPreview && (
+                    <div className="space-y-2">
+                        <Label>Current/New Preview</Label>
+                        <Image 
+                            src={thumbnailPreview} 
+                            alt="Thumbnail preview" 
+                            width={320} 
+                            height={180} 
+                            className="rounded-md border object-cover aspect-video"
+                            data-ai-hint="video thumbnail"
+                        />
+                    </div>
+                )}
+            </div>
+            {newThumbnailFile && (
+              <Button onClick={handleUpdateThumbnail} disabled={isUpdatingThumbnail} className="w-full sm:w-auto gap-1.5">
+                {isUpdatingThumbnail ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UploadCloud size={16}/>}
+                Upload New Thumbnail
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>
   );
 }
+
+// Helper function for direct Firestore update (consider moving to a shared lib or actions file if reused)
+import { updateDoc, doc } from "firebase/firestore";
+import { db } from "@/lib/firebase/config"; // Assuming db is exported from your firebase config

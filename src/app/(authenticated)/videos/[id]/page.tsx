@@ -1,16 +1,18 @@
 
 "use client";
 
-import { useEffect, useState, Suspense } from 'react';
+import { useEffect, useState, Suspense, useRef, FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import type { VideoMeta } from '@/types';
+import type { VideoMeta, VideoComment } from '@/types';
 import { getVideoById } from '@/lib/firebase/firestore';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, CalendarDays, UserCircle, Tag, Eye, Share2, MessageSquare, Edit3, Trash2, AlertTriangle, Copy } from 'lucide-react';
+import { ArrowLeft, CalendarDays, UserCircle, Tag, Eye, Share2, MessageSquare, Edit3, Trash2, AlertTriangle, Copy, Mic, Send } from 'lucide-react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -25,9 +27,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from '@/hooks/use-toast';
-import { deleteVideoAction } from './actions'; // To be created
+import { deleteVideoAction, addCommentAction } from './actions'; 
+import { formatDistanceToNow } from 'date-fns';
 
-// A simple video player component
 const VideoPlayer = ({ src, type }: { src: string; type?: string }) => {
   return (
     <div className="aspect-video w-full bg-black rounded-lg overflow-hidden shadow-2xl">
@@ -47,6 +49,15 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
   const router = useRouter();
   const { toast } = useToast();
 
+  // Comment states
+  const [newCommentText, setNewCommentText] = useState('');
+  const [isPostingComment, setIsPostingComment] = useState(false);
+
+  // Speech recognition states
+  const [isListening, setIsListening] = useState(false);
+  const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
+
+
   useEffect(() => {
     if (videoId) {
       const fetchVideo = async () => {
@@ -63,6 +74,37 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
       fetchVideo();
     }
   }, [videoId]);
+  
+  // Initialize SpeechRecognition
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognitionAPI) {
+        const recognition = new SpeechRecognitionAPI();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = 'en-US';
+
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
+          const transcript = event.results[0][0].transcript;
+          setNewCommentText(prev => prev ? prev + ' ' + transcript : transcript);
+          setIsListening(false);
+        };
+        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+          console.error('Speech recognition error:', event.error);
+          toast({ variant: 'destructive', title: 'Speech Error', description: event.error });
+          setIsListening(false);
+        };
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+        speechRecognitionRef.current = recognition;
+      } else {
+        console.warn("Speech Recognition API not supported in this browser.");
+      }
+    }
+  }, [toast]);
+
 
   const handleShare = async () => {
     if (navigator.share) {
@@ -74,8 +116,6 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
         });
         toast({ title: "Shared successfully!" });
       } catch (error) {
-        console.error("Error sharing:", error);
-        // Fallback to copy if share fails or is cancelled
         copyLinkToClipboard();
       }
     } else {
@@ -104,7 +144,7 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
       const result = await deleteVideoAction(videoId, video.storagePath, video.thumbnailStoragePath);
       if (result.success) {
         toast({ title: "Video Deleted", description: "The video has been successfully deleted." });
-        router.push('/videos'); // Redirect to videos list
+        router.push('/videos'); 
       } else {
         throw new Error(result.error || "Failed to delete video.");
       }
@@ -116,13 +156,59 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
     }
   };
 
+  const handlePostComment = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user || !newCommentText.trim() || !video) {
+      toast({ variant: "destructive", title: "Error", description: "Cannot post empty comment or user not logged in." });
+      return;
+    }
+    setIsPostingComment(true);
+    try {
+      const result = await addCommentAction(video.id, {
+        userId: user.uid,
+        userName: user.displayName || user.email || "Anonymous",
+        userPhotoUrl: user.photoURL || undefined,
+        text: newCommentText,
+      });
+      if (result.success && result.commentId) {
+        toast({ title: "Comment Posted" });
+        setNewCommentText('');
+        // Optimistically update UI or refetch video data
+        // For simplicity, let's refetch (though optimistic update is better UX)
+        const updatedVideo = await getVideoById(videoId);
+        setVideo(updatedVideo);
+      } else {
+        throw new Error(result.error || "Failed to post comment.");
+      }
+    } catch (err) {
+      console.error("Failed to post comment:", err);
+      toast({ variant: "destructive", title: "Comment Failed", description: err instanceof Error ? err.message : "An unknown error occurred." });
+    } finally {
+      setIsPostingComment(false);
+    }
+  };
+  
+  const toggleListening = () => {
+    if (!speechRecognitionRef.current) {
+      toast({ variant: 'destructive', title: 'Unsupported', description: 'Speech recognition is not supported in your browser.' });
+      return;
+    }
+    if (isListening) {
+      speechRecognitionRef.current.stop();
+    } else {
+      speechRecognitionRef.current.start();
+    }
+    setIsListening(!isListening);
+  };
+
+
   if (loading) {
     return (
       <div className="container mx-auto py-8 max-w-4xl">
-        <Skeleton className="h-10 w-32 mb-6" /> {/* Back button skeleton */}
+        <Skeleton className="h-10 w-32 mb-6" />
         <Skeleton className="aspect-video w-full rounded-lg mb-6" />
-        <Skeleton className="h-8 w-3/4 mb-2" /> {/* Title */}
-        <Skeleton className="h-5 w-1/2 mb-4" /> {/* Meta info */}
+        <Skeleton className="h-8 w-3/4 mb-2" /> 
+        <Skeleton className="h-5 w-1/2 mb-4" /> 
         <div className="space-y-2">
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-full" />
@@ -145,7 +231,6 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
     );
   }
   
-  // Admin can edit/delete if they are an admin, regardless of who uploaded.
   const canManage = isAdmin;
 
   return (
@@ -189,7 +274,7 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
           <div className="mt-6 flex flex-wrap gap-2 items-center justify-between">
             <div className="flex gap-2">
               <Button variant="outline" size="sm" className="gap-1.5" onClick={handleShare}><Share2 size={16}/> Share</Button>
-              <Button variant="outline" size="sm" className="gap-1.5"><MessageSquare size={16}/> Comment</Button>
+              {/* <Button variant="outline" size="sm" className="gap-1.5"><MessageSquare size={16}/> Comment</Button> */}
             </div>
             {canManage && (
               <div className="flex gap-2">
@@ -224,13 +309,68 @@ function VideoDetailPageContent({ videoId }: { videoId: string }) {
         </CardContent>
       </Card>
 
-      {/* Placeholder for Comments Section */}
       <Card className="mt-8">
         <CardHeader>
-          <CardTitle>Comments</CardTitle>
+          <CardTitle className="text-xl flex items-center gap-2"><MessageSquare size={24}/> Comments ({video.comments?.length || 0})</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-muted-foreground">Comments section coming soon.</p>
+          {user && (
+            <form onSubmit={handlePostComment} className="mb-6 space-y-3">
+              <Label htmlFor="new-comment" className="sr-only">Your comment</Label>
+              <div className="relative">
+                <Textarea
+                  id="new-comment"
+                  value={newCommentText}
+                  onChange={(e) => setNewCommentText(e.target.value)}
+                  placeholder="Write your comment here..."
+                  rows={3}
+                  className="pr-12"
+                  disabled={isPostingComment}
+                />
+                {speechRecognitionRef.current && (
+                <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={toggleListening}
+                    className={`absolute right-2 top-1/2 -translate-y-1/2 ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground'}`}
+                    title={isListening ? "Stop listening" : "Use microphone"}
+                    disabled={isPostingComment}
+                >
+                    <Mic size={18} />
+                </Button>
+                 )}
+              </div>
+              <Button type="submit" disabled={isPostingComment || !newCommentText.trim()} className="gap-2">
+                {isPostingComment ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send size={16} />}
+                Post Comment
+              </Button>
+            </form>
+          )}
+          {!user && <p className="text-muted-foreground mb-4">Please <Link href="/login" className="text-primary hover:underline">log in</Link> to post a comment.</p>}
+
+          <div className="space-y-4">
+            {video.comments && video.comments.length > 0 ? (
+              video.comments.sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map(comment => (
+                <div key={comment.id} className="flex items-start space-x-3 p-3 border rounded-lg bg-card shadow-sm">
+                  <Avatar className="h-9 w-9">
+                    <AvatarImage src={comment.userPhotoUrl || undefined} alt={comment.userName} />
+                    <AvatarFallback>{comment.userName.charAt(0).toUpperCase()}</AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                        <p className="text-sm font-medium text-foreground">{comment.userName} {comment.userId === video.doctorId && <Badge variant="outline" className="ml-1 text-xs">Author</Badge>}</p>
+                        <p className="text-xs text-muted-foreground">{formatDistanceToNow(new Date(comment.createdAt), { addSuffix: true })}</p>
+                    </div>
+                    <p className="text-sm text-foreground/80 whitespace-pre-wrap mt-1">{comment.text}</p>
+                    {/* TODO: Add reply functionality here */}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-muted-foreground">No comments yet. Be the first to comment!</p>
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>
