@@ -278,7 +278,8 @@ export default function VideoRecorderIOSPage() {
       const safeTitle = title.replace(/[^a-z0-9_]+/gi, '_').toLowerCase();
       const extension = getFileExtensionFromMimeType(recordedVideoBlob.type || actualMimeType);
       const timestamp = Date.now();
-      const filename = `videos/${currentUserId}/ios_uploads/${safeTitle}_${timestamp}.${extension}`;
+      // Modified filename to match working storage rules
+      const filename = `videos/${currentUserId}/${safeTitle}_ios_${timestamp}.${extension}`;
       
       console.log(`VideoRecorderIOS: Attempting to upload to Firebase Storage path: ${filename}`);
       
@@ -455,6 +456,8 @@ export default function VideoRecorderIOSPage() {
     </div>
   );
 }
+    
+
     
 
     
