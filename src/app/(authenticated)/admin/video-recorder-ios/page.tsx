@@ -256,7 +256,8 @@ export default function VideoRecorderIOSPage() {
 
   const uploadToFirebase = async () => {
     if (!recordedVideoBlob || !user) {
-        setError("No video to upload or user not found.");
+        setError("No video to upload or user not authenticated. Please ensure you are logged in.");
+        console.error("VideoRecorderIOS: Upload cancelled. No video blob or user not found.", { hasBlob: !!recordedVideoBlob, hasUser: !!user });
         return;
     }
     if (!title.trim()) {
@@ -268,11 +269,18 @@ export default function VideoRecorderIOSPage() {
     setError(null);
     setSuccessMessage(null);
 
+    const currentUserId = user.uid;
+    console.log(`VideoRecorderIOS: Preparing to upload. User UID: ${currentUserId}`);
+    console.log("VideoRecorderIOS: Current user object from useAuth:", JSON.stringify(user, null, 2));
+
+
     try {
       const safeTitle = title.replace(/[^a-z0-9_]+/gi, '_').toLowerCase();
       const extension = getFileExtensionFromMimeType(recordedVideoBlob.type || actualMimeType);
       const timestamp = Date.now();
-      const filename = `videos/${user.uid}/ios_uploads/${safeTitle}_${timestamp}.${extension}`;
+      const filename = `videos/${currentUserId}/ios_uploads/${safeTitle}_${timestamp}.${extension}`;
+      
+      console.log(`VideoRecorderIOS: Attempting to upload to Firebase Storage path: ${filename}`);
       
       const fileRef = storageRefFirebase(firebaseStorage, filename);
       const uploadTask = uploadBytesResumable(fileRef, recordedVideoBlob);
@@ -282,15 +290,21 @@ export default function VideoRecorderIOSPage() {
           const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
           setUploadProgress(progress);
         },
-        (uploadError) => {
-          console.error("Upload failed:", uploadError);
-          setError(`Upload failed: ${uploadError.message}`);
+        (uploadError: any) => {
+          console.error("VideoRecorderIOS: Firebase Upload failed:", uploadError);
+          console.error("VideoRecorderIOS: Firebase Upload error code:", uploadError.code);
+          console.error("VideoRecorderIOS: Firebase Upload error message:", uploadError.message);
+          if (uploadError.code === 'storage/unauthorized') {
+            setError(`Upload failed: You do not have permission to upload to this location (${filename}). Please check your Firebase Storage security rules to ensure the authenticated user (UID: ${currentUserId}) has write access to this specific path.`);
+          } else {
+            setError(`Upload failed: ${uploadError.message}`);
+          }
           setIsUploading(false);
         },
         async () => {
           const downloadURL = await getFirebaseDownloadURL(uploadTask.snapshot.ref);
-          console.log("Video uploaded successfully! URL:", downloadURL);
-          setSuccessMessage(`Video "${title}" uploaded successfully to Firebase Storage! It won't appear in the app's video list yet as this is a direct upload.`);
+          console.log("VideoRecorderIOS: Video uploaded successfully! URL:", downloadURL);
+          setSuccessMessage(`Video "${title}" uploaded successfully to Firebase Storage! Path: ${filename}. It won't appear in the app's video list yet as this is a direct upload.`);
           setIsUploading(false);
           setRecordedVideoBlob(null);
           if(recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
@@ -299,7 +313,7 @@ export default function VideoRecorderIOSPage() {
         }
       );
     } catch (err) {
-      console.error("Upload preparation failed:", err);
+      console.error("VideoRecorderIOS: Upload preparation failed:", err);
       setError(`Upload preparation failed: ${err instanceof Error ? err.message : String(err)}`);
       setIsUploading(false);
     }
