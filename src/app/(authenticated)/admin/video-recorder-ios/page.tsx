@@ -41,7 +41,7 @@ export default function VideoRecorderIOSPage() {
   const [error, setError] = useState<string | null>(null);
   const [uploadSuccessMessage, setUploadSuccessMessage] = useState<string | null>(null); // Renamed for clarity
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [isUploading, setIsUploading] = useState(isUploading);
+  const [isUploading, setIsUploading] = useState(false); // Corrected initialization
   const [previewRotation, setPreviewRotation] = useState(0);
   const actualMimeTypeRef = useRef<string>('');
 
@@ -133,15 +133,14 @@ export default function VideoRecorderIOSPage() {
     const types = (isIOS || isSafari)
       ? [ 
           // Prioritize MP4 for iOS/Safari for recording reliability
+          'video/webm;codecs=vp9,opus', 
+          'video/webm;codecs=vp8,opus', 
+          'video/webm',     
           'video/mp4;codecs=avc1.4D401E', 
           'video/mp4;codecs=avc1.42E01E', 
           'video/mp4;codecs=h264',
           'video/mp4', 
-          'video/quicktime', 
-          // WebM as lower priority fallback for iOS (less likely to work for recording)
-          'video/webm;codecs=vp9,opus', 
-          'video/webm;codecs=vp8,opus', 
-          'video/webm',                 
+          'video/quicktime',          
         ]
       : [ 
           // Prioritize WebM for non-iOS
@@ -467,7 +466,6 @@ export default function VideoRecorderIOSPage() {
       const timestamp = Date.now();
       const videoExtension = getFileExtensionFromMimeType(recordedVideoBlob.type || actualMimeTypeRef.current);
       const videoFileName = `${safeTitleForFile}_ios_${timestamp}.${videoExtension}`;
-      // Path now directly under videos/{userId}/ to match Firebase rules
       const videoStoragePath = `videos/${currentUserId}/${videoFileName}`; 
       
       const thumbnailFileName = `thumb_${safeTitleForFile}_ios_${timestamp}.jpg`;
@@ -511,7 +509,7 @@ export default function VideoRecorderIOSPage() {
                 console.log("VideoRecorderIOS: Thumbnail uploaded successfully! URL:", thumbDownloadURL);
 
                 const videoId = uuidv4();
-                const videoMetaData = { // Matches IOSVideoDataForFirestore structure
+                const videoMetaData = { 
                     videoId,
                     title,
                     description,
@@ -522,7 +520,7 @@ export default function VideoRecorderIOSPage() {
                     thumbnailStoragePath: thumbnailStoragePath,
                     videoSize: recordedVideoBlob.size,
                     videoType: recordedVideoBlob.type || actualMimeTypeRef.current,
-                    recordingDuration: recordingDuration, // Ensure this is accurate
+                    recordingDuration: recordingDuration, 
                     doctorId: currentUserId,
                     doctorName: currentDoctorName,
                 };
@@ -532,21 +530,13 @@ export default function VideoRecorderIOSPage() {
                 if (result.success) {
                     setUploadSuccessMessage(`Video "${title}" uploaded and metadata saved! It should now appear in the video list.`);
                     setIsUploading(false);
-                    // Do not reset the entire recorder here, just relevant upload/form states.
-                    // User might want to save locally again or re-upload if they notice an issue.
-                    // A "Record Another" button will handle full reset.
                     setTitle(''); setDescription(''); setKeywords(''); setSelectedThumbnailIndex(null);
-                    // Keep recordedVideoBlob and recordedVideoUrl for now if needed for other actions
-                    // or clear them if the flow is strictly "upload then done".
-                    // For now, let's clear them to signify completion of this video's lifecycle.
                     setRecordedVideoBlob(null);
                     if(recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
                     setRecordedVideoUrl(null);
                     potentialThumbnails.forEach(url => { if(url) URL.revokeObjectURL(url) });
                     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
                     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
-
-
                 } else {
                     let detailedError = result.error || "Failed to save video metadata to Firestore.";
                     if (detailedError.toLowerCase().includes("permission_denied") || detailedError.toLowerCase().includes("missing or insufficient permissions")) {
@@ -790,5 +780,3 @@ export default function VideoRecorderIOSPage() {
     </div>
   );
 }
-
-    
