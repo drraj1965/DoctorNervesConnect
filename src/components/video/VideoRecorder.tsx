@@ -119,294 +119,299 @@ export default function VideoRecorder() {
   
   const startRecording = async () => {
     console.log("VideoRecorder: Attempting to start recording...");
-    
-    // Check 1: Initial stream validity
-    if (!mediaStreamRef.current || !mediaStreamRef.current.active) {
-      console.log("VideoRecorder: Media stream not available or not active. Requesting permissions first.");
-      await requestPermissionsAndSetup();
-      // After attempting setup, re-check rigorously
-      if (!mediaStreamRef.current || !mediaStreamRef.current.active) {
-          console.error("VideoRecorder: CRITICAL - MediaStream is still invalid or inactive after attempting re-setup.");
-          setError("Failed to initialize recording: Camera stream could not be established. Please try setting up the camera again.");
-          setRecordingState('error');
-          return;
+    let streamToUse = mediaStreamRef.current;
+
+    // Internal helper to validate a stream
+    const isStreamValid = (stream: MediaStream | null): boolean => {
+      if (!stream) {
+        console.warn("VideoRecorder (isStreamValid): Stream is null or undefined.");
+        return false;
+      }
+      if (!(stream instanceof MediaStream)) {
+        console.warn("VideoRecorder (isStreamValid): Provided object is not an instance of MediaStream. Value:", stream);
+        return false;
+      }
+      if (!stream.active) {
+        console.warn("VideoRecorder (isStreamValid): Stream is not active.");
+        return false;
+      }
+      if (stream.getTracks().length === 0) {
+        console.warn("VideoRecorder (isStreamValid): Stream has no tracks.");
+        return false;
+      }
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) {
+        console.warn("VideoRecorder (isStreamValid): Stream has no video tracks.");
+        return false;
+      }
+      if (videoTrack.readyState !== 'live') {
+        console.warn(`VideoRecorder (isStreamValid): Video track is not live. State: ${videoTrack.readyState}`);
+        return false;
+      }
+      console.log("VideoRecorder (isStreamValid): Stream appears to be valid.");
+      return true;
+    };
+
+    // Validate current stream or attempt to get a new one
+    if (!isStreamValid(streamToUse)) {
+      console.log("VideoRecorder: Current stream is invalid or missing. Attempting to request new permissions/setup.");
+      await requestPermissionsAndSetup(); // This updates mediaStreamRef.current
+      streamToUse = mediaStreamRef.current; // Get the potentially new stream from the ref
+
+      // Re-validate after attempting setup
+      if (!isStreamValid(streamToUse)) {
+        console.error("VideoRecorder: CRITICAL - MediaStream is still invalid after attempting re-setup.");
+        setError("Failed to initialize recording: Camera stream could not be established or is invalid. Please try setting up the camera again or check browser permissions.");
+        setRecordingState('error');
+        return;
       }
     }
 
-    // Check 2: Ensure mediaStreamRef.current IS a MediaStream instance and is active with live tracks
-    if (!(mediaStreamRef.current instanceof MediaStream)) {
-        console.error("VideoRecorder: CRITICAL - mediaStreamRef.current is NOT an instance of MediaStream before new MediaRecorder(). Value:", mediaStreamRef.current);
-        setError("Failed to initialize recording: Camera data is not in the correct format. Please try re-initializing the camera.");
-        setRecordingState('error');
-        return;
+    // At this point, streamToUse *should* be valid if we haven't returned.
+    console.log("VideoRecorder: Final validation passed. Preparing to instantiate MediaRecorder.");
+    console.log("  - Stream object being passed to MediaRecorder:", streamToUse);
+    if (streamToUse) {
+      console.log(`  - Stream active: ${streamToUse.active}`);
+      streamToUse.getTracks().forEach((track, index) => {
+        console.log(`  - Track ${index}: kind=${track.kind}, id=${track.id}, readyState=${track.readyState}, muted=${track.muted}, enabled=${track.enabled}`);
+      });
+    } else {
+      console.error("VideoRecorder: CRITICAL - streamToUse is null just before MediaRecorder instantiation, this should not happen if validation passed.");
+      setError("Internal error: Stream became null unexpectedly.");
+      setRecordingState('error');
+      return;
     }
-    if (!mediaStreamRef.current.active) {
-        console.error("VideoRecorder: CRITICAL - mediaStreamRef.current is NOT active before new MediaRecorder().");
-        setError("Failed to initialize recording: Camera stream is not active. Please try re-initializing the camera.");
-        setRecordingState('error');
-        return;
+    
+    // Proceed with MediaRecorder setup
+    setError(null);
+    recordedChunksRef.current = [];
+    setRecordedVideoBlob(null);
+    if (recordedVideoUrl) {
+      URL.revokeObjectURL(recordedVideoUrl);
+      setRecordedVideoUrl(null);
     }
-    if (mediaStreamRef.current.getTracks().length === 0) {
-        console.error("VideoRecorder: CRITICAL - mediaStreamRef.current has NO tracks before new MediaRecorder().");
-        setError("Failed to initialize recording: Camera stream has no tracks. Please try re-initializing the camera.");
-        setRecordingState('error');
-        return;
-    }
-    let videoTrackLive = false;
-    mediaStreamRef.current.getTracks().forEach(track => {
-        console.log(`VideoRecorder: Pre-record check just before new MediaRecorder - Track kind: ${track.kind}, readyState: ${track.readyState}, enabled: ${track.enabled}, muted: ${track.muted}, id: ${track.id}`);
-        if (track.kind === "video" && track.readyState === 'live') {
-            videoTrackLive = true;
+    potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); });
+    setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
+    setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
+    setSelectedThumbnailIndex(0);
+    setDuration(0);
+    actualMimeTypeRef.current = '';
+
+    if (videoPreviewRef.current) {
+        if (videoPreviewRef.current.srcObject !== streamToUse) {
+          console.log("VideoRecorder: Resetting video preview to live camera feed for recording.");
+          videoPreviewRef.current.srcObject = streamToUse;
+          videoPreviewRef.current.src = ""; 
         }
-    });
-    if (!videoTrackLive) {
-        const videoTrackState = mediaStreamRef.current.getVideoTracks()[0]?.readyState;
-        console.error(`VideoRecorder: CRITICAL - Video track not live (state: ${videoTrackState}) just before new MediaRecorder().`);
-        setError(`Failed to initialize recording: The camera video track is not live (state: ${videoTrackState}). Try re-enabling camera or ensure it's not used by another app.`);
-        setRecordingState('error');
-        return;
+        videoPreviewRef.current.controls = false;
+        videoPreviewRef.current.muted = true;
+        videoPreviewRef.current.setAttribute('playsinline', 'true');
+        videoPreviewRef.current.setAttribute('autoplay', 'true');
+        await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error replaying live preview before recording:", e));
+    }
+
+    let chosenMimeType = '';
+    const isIOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) && !(window as any).MSStream;
+    console.log("VideoRecorder: isIOS detected:", isIOS);
+
+    const mimeTypesToCheck = isIOS 
+    ? [
+        'video/mp4;codecs=avc1.4D401E', 
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4;codecs=hvc1.1.6.L93.90', 
+        'video/mp4', 
+        'video/webm;codecs=vp9,opus', 
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+      ]
+    : [ 
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4',
+      ];
+    
+    console.log("VideoRecorder: Checking supported MIME types from list:", mimeTypesToCheck);
+    for (const type of mimeTypesToCheck) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        chosenMimeType = type;
+        console.log(`VideoRecorder: Found supported MIME type: ${type}`);
+        break;
+      } else {
+        console.log(`VideoRecorder: MIME type NOT supported: ${type}`);
+      }
     }
     
-    // If all checks pass, proceed with MediaRecorder setup
-    if (mediaStreamRef.current && mediaStreamRef.current.active && (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording')) {
-      console.log("VideoRecorder: Proceeding to start recording setup after successful stream validation.");
-      setError(null);
-      recordedChunksRef.current = [];
-      setRecordedVideoBlob(null);
-      if (recordedVideoUrl) {
-        URL.revokeObjectURL(recordedVideoUrl);
-        setRecordedVideoUrl(null);
-      }
-      potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); });
-      setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
-      setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
-      setSelectedThumbnailIndex(0);
-      setDuration(0);
-      actualMimeTypeRef.current = '';
+    if (!chosenMimeType) {
+      console.warn("VideoRecorder: No explicitly supported MIME type found from preferred list. Letting browser choose a default.");
+    }
+    console.log(`VideoRecorder: Attempting to record with MIME type: '${chosenMimeType || 'Browser default'}'`);
+    actualMimeTypeRef.current = chosenMimeType;
 
-      if (videoPreviewRef.current) {
-          if (videoPreviewRef.current.srcObject !== mediaStreamRef.current) {
-            console.log("VideoRecorder: Resetting video preview to live camera feed for recording.");
-            videoPreviewRef.current.srcObject = mediaStreamRef.current;
-            videoPreviewRef.current.src = ""; 
-          }
+
+    const options: MediaRecorderOptions = {};
+    if (chosenMimeType) {
+      options.mimeType = chosenMimeType;
+    }
+
+    try {
+      mediaRecorderRef.current = new MediaRecorder(streamToUse, options); // Use validated streamToUse
+      console.log(`VideoRecorder: MediaRecorder instantiated. Requested MIME type: ${options.mimeType || 'browser default'}. Actual initial state: ${mediaRecorderRef.current.state}`);
+    } catch (e) {
+      console.error("VideoRecorder: Error creating MediaRecorder instance:", e);
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      setError(`Failed to initialize recorder: ${errorMsg}. Try a different browser or check device compatibility.`);
+      setRecordingState('error');
+      return;
+    }
+      
+    mediaRecorderRef.current.onstart = () => {
+      if(mediaRecorderRef.current) actualMimeTypeRef.current = mediaRecorderRef.current.mimeType || chosenMimeType || '';
+      console.log(`VideoRecorder: MediaRecorder.onstart event fired. Actual MIME type: ${actualMimeTypeRef.current}. State: ${mediaRecorderRef.current?.state}`);
+      setRecordingState('recording');
+      let seconds = 0;
+      recordingTimerRef.current = setInterval(() => {
+        seconds++;
+        setDuration(seconds);
+        if (seconds * 1000 >= MAX_RECORDING_TIME_MS) {
+          console.log("VideoRecorder: Max recording time reached. Stopping recording.");
+          stopRecording();
+          setError("Maximum recording time reached (30 minutes).");
+        }
+      }, 1000);
+    };
+
+    mediaRecorderRef.current.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        recordedChunksRef.current.push(event.data);
+        console.log(`VideoRecorder: MediaRecorder.ondataavailable: chunk size ${event.data.size}, total chunks ${recordedChunksRef.current.length}`);
+      } else {
+        console.log("VideoRecorder: MediaRecorder.ondataavailable: received empty chunk.");
+      }
+    };
+
+    mediaRecorderRef.current.onstop = async () => {
+      console.log(`VideoRecorder: MediaRecorder.onstop event fired. State: ${mediaRecorderRef.current?.state}. Chunks collected: ${recordedChunksRef.current.length}`);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      
+      if (recordedChunksRef.current.length === 0) {
+        console.warn("VideoRecorder: No data recorded (recordedChunksRef is empty at onstop). This can happen on iOS devices or if recording is too short or MediaRecorder failed to start properly.");
+        setError("No video data was recorded. Please try recording for at least a few seconds. If using iOS, this may be a device or browser limitation. Ensure Low Power Mode is off.");
+        setRecordingState('error');
+        if (mediaStreamRef.current && videoPreviewRef.current) { 
+          videoPreviewRef.current.srcObject = mediaStreamRef.current;
+          videoPreviewRef.current.src = "";
           videoPreviewRef.current.controls = false;
           videoPreviewRef.current.muted = true;
-          videoPreviewRef.current.setAttribute('playsinline', 'true');
-          videoPreviewRef.current.setAttribute('autoplay', 'true');
-          await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error replaying live preview before recording:", e));
-      }
-
-      let chosenMimeType = '';
-      const isIOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) && !(window as any).MSStream;
-      console.log("VideoRecorder: isIOS detected:", isIOS);
-
-      const mimeTypesToCheck = isIOS 
-      ? [
-          'video/mp4;codecs=avc1.4D401E', 
-          'video/mp4;codecs=avc1.42E01E',
-          'video/mp4;codecs=hvc1.1.6.L93.90', 
-          'video/mp4', 
-          'video/webm;codecs=vp9,opus', 
-          'video/webm;codecs=vp8,opus',
-          'video/webm',
-        ]
-      : [ 
-          'video/webm;codecs=vp9,opus',
-          'video/webm;codecs=vp8,opus',
-          'video/webm',
-          'video/mp4;codecs=avc1.42E01E',
-          'video/mp4',
-        ];
-      
-      console.log("VideoRecorder: Checking supported MIME types from list:", mimeTypesToCheck);
-      for (const type of mimeTypesToCheck) {
-        if (MediaRecorder.isTypeSupported(type)) {
-          chosenMimeType = type;
-          console.log(`VideoRecorder: Found supported MIME type: ${type}`);
-          break;
-        } else {
-          console.log(`VideoRecorder: MIME type NOT supported: ${type}`);
+          await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error replaying live preview after empty stop:", e));
         }
-      }
-      
-      if (!chosenMimeType) {
-        console.warn("VideoRecorder: No explicitly supported MIME type found from preferred list. Letting browser choose a default.");
-      }
-      console.log(`VideoRecorder: Attempting to record with MIME type: '${chosenMimeType || 'Browser default'}'`);
-
-
-      const options: MediaRecorderOptions = {};
-      if (chosenMimeType) {
-        options.mimeType = chosenMimeType;
-      }
-
-      try {
-        mediaRecorderRef.current = new MediaRecorder(mediaStreamRef.current, options);
-        console.log(`VideoRecorder: MediaRecorder instantiated. Requested MIME type: ${options.mimeType || 'browser default'}. Actual initial state: ${mediaRecorderRef.current.state}`);
-      } catch (e) {
-        console.error("VideoRecorder: Error creating MediaRecorder instance:", e);
-        const errorMsg = e instanceof Error ? e.message : String(e);
-        setError(`Failed to initialize recorder: ${errorMsg}. Try a different browser or check device compatibility.`);
-        setRecordingState('error');
         return;
       }
+
+      let blobMimeType = actualMimeTypeRef.current;
+      if (!blobMimeType && recordedChunksRef.current.length > 0) {
+          blobMimeType = recordedChunksRef.current[0].type || (isIOS ? 'video/mp4' : 'video/webm');
+          console.warn(`VideoRecorder: actualMimeTypeRef.current was empty at onstop, inferring blob type as: ${blobMimeType}`);
+      } else if (!blobMimeType) {
+          blobMimeType = isIOS ? 'video/mp4' : 'video/webm'; 
+           console.warn(`VideoRecorder: actualMimeTypeRef.current was empty and no chunks to infer from. Falling back to: ${blobMimeType}`);
+      }
+      console.log(`VideoRecorder: Creating blob with type: ${blobMimeType}. Chunks count: ${recordedChunksRef.current.length}`);
       
-      mediaRecorderRef.current.onstart = () => {
-        actualMimeTypeRef.current = mediaRecorderRef.current?.mimeType || chosenMimeType || '';
-        console.log(`VideoRecorder: MediaRecorder.onstart event fired. Actual MIME type: ${actualMimeTypeRef.current}. State: ${mediaRecorderRef.current?.state}`);
-        setRecordingState('recording');
-        let seconds = 0;
-        recordingTimerRef.current = setInterval(() => {
-          seconds++;
-          setDuration(seconds);
-          if (seconds * 1000 >= MAX_RECORDING_TIME_MS) {
-            console.log("VideoRecorder: Max recording time reached. Stopping recording.");
-            stopRecording();
-            setError("Maximum recording time reached (30 minutes).");
-          }
-        }, 1000);
-      };
+      const blob = new Blob(recordedChunksRef.current, { type: blobMimeType });
+      console.log(`VideoRecorder: Recorded Blob created. Size: ${blob.size}, Type: ${blob.type}`);
 
-      mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-          console.log(`VideoRecorder: MediaRecorder.ondataavailable: chunk size ${event.data.size}, total chunks ${recordedChunksRef.current.length}`);
-        } else {
-          console.log("VideoRecorder: MediaRecorder.ondataavailable: received empty chunk.");
-        }
-      };
-
-      mediaRecorderRef.current.onstop = async () => {
-        console.log(`VideoRecorder: MediaRecorder.onstop event fired. State: ${mediaRecorderRef.current?.state}. Chunks collected: ${recordedChunksRef.current.length}`);
-        if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-        
-        if (recordedChunksRef.current.length === 0) {
-          console.warn("VideoRecorder: No data recorded (recordedChunksRef is empty at onstop). This can happen on iOS devices or if recording is too short or MediaRecorder failed to start properly.");
-          setError("No video data was recorded. Please try recording for at least a few seconds. If using iOS, this may be a device or browser limitation. Ensure Low Power Mode is off.");
+      if (blob.size === 0) {
+          console.warn("VideoRecorder: Recorded blob size is 0 after creation. This often indicates an issue with MediaRecorder on iOS or an extremely short recording.");
+          setError("Recorded video is empty. This might be due to device limitations (common on iOS if recorder didn't start correctly) or if the recording was too short. Please try again, ensuring you record for a few seconds. If the issue persists on an iOS device, it may be related to specific OS media handling. Try disabling Low Power Mode.");
           setRecordingState('error');
-          if (mediaStreamRef.current && videoPreviewRef.current) { 
-            videoPreviewRef.current.srcObject = mediaStreamRef.current;
-            videoPreviewRef.current.src = "";
-            videoPreviewRef.current.controls = false;
-            videoPreviewRef.current.muted = true;
-            await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error replaying live preview after empty stop:", e));
-          }
           return;
+      }
+
+      setRecordedVideoBlob(blob);
+      const url = URL.createObjectURL(blob);
+      setRecordedVideoUrl(url);
+
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = null; 
+        videoPreviewRef.current.src = ""; 
+        videoPreviewRef.current.src = url; 
+        videoPreviewRef.current.controls = true;
+        videoPreviewRef.current.muted = false; 
+        videoPreviewRef.current.setAttribute('playsinline', 'true'); 
+        videoPreviewRef.current.removeAttribute('autoplay');
+
+
+        videoPreviewRef.current.onloadedmetadata = async () => {
+           console.log("VideoRecorder: Video metadata loaded successfully for preview.");
+           if(videoPreviewRef.current && videoPreviewRef.current.duration > 0 && Number.isFinite(videoPreviewRef.current.duration)) {
+              const videoDuration = Math.round(videoPreviewRef.current.duration);
+              console.log(`VideoRecorder: Actual video duration from metadata: ${videoDuration}s. Timer duration: ${duration}s.`);
+              // Use timer duration for primary logic, but videoElement's duration if it's valid for thumbnail generation
+              await generatePotentialThumbnails(url, videoDuration > 0 ? videoDuration : duration); 
+           } else if (videoPreviewRef.current) {
+              console.warn("VideoRecorder: Video duration is 0 or invalid after loading metadata for preview. Using timer duration for thumbnails. Timer duration: ${duration}s");
+              await generatePotentialThumbnails(url, duration); // Fallback to timer duration
+           }
+           setRecordingState('stopped'); 
+        };
+        videoPreviewRef.current.onerror = (e) => {
+          console.error("VideoRecorder: Error loading recorded video in preview element. Event:", e);
+          setError("Could not load the recorded video for preview and thumbnail generation. The recording might be corrupted or in an unsupported format for preview. This can occur on some mobile devices.");
+          setRecordingState('error'); 
         }
+        console.log(`VideoRecorder: Setting video preview src to: ${url}. Initiating load.`);
+        videoPreviewRef.current.load(); 
+        await videoPreviewRef.current.play()
+          .then(() => console.log("VideoRecorder: Video preview playback attempt for review initiated."))
+          .catch(playError => {
+            console.warn("VideoRecorder: Error trying to play video preview for review (this may be expected on some browsers without user interaction for non-muted video):", playError);
+          });
+      } else {
+          console.error("VideoRecorder: videoPreviewRef.current is null in onstop handler.");
+          setError("Internal error: Video preview element not found after recording.");
+          setRecordingState('error');
+      }
+    };
+    
+    mediaRecorderRef.current.onerror = (event: Event) => {
+      console.error("VideoRecorder: MediaRecorder.onerror event fired. Event object:", event);
+      let errorDetail = "Unknown recording error.";
+      const castEvent = event as any; 
+      if (castEvent.error && castEvent.error.name && castEvent.error.message) {
+          errorDetail = `Name: ${castEvent.error.name}, Message: ${castEvent.error.message}`;
+          console.error("VideoRecorder: MediaRecorder DOMException Name:", castEvent.error.name);
+          console.error("VideoRecorder: MediaRecorder DOMException Message:", castEvent.error.message);
+      } else if (castEvent.name) { 
+          errorDetail = castEvent.name;
+      } else if (typeof event.type === 'string') {
+           errorDetail = `Event type: ${event.type}`;
+      }
+      setError(`A recording error occurred: ${errorDetail}. Please try again or use a different browser/device. Ensure permissions are granted and Low Power Mode is off if on iOS.`);
+      setRecordingState('error');
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      console.log("VideoRecorder: MediaRecorder.onerror: Set recordingState to 'error'. Cleared timer.");
+    };
 
-        let blobMimeType = actualMimeTypeRef.current;
-        if (!blobMimeType && recordedChunksRef.current.length > 0) {
-            blobMimeType = recordedChunksRef.current[0].type || (isIOS ? 'video/mp4' : 'video/webm');
-            console.warn(`VideoRecorder: actualMimeTypeRef.current was empty at onstop, inferring blob type as: ${blobMimeType}`);
-        } else if (!blobMimeType) {
-            blobMimeType = isIOS ? 'video/mp4' : 'video/webm'; 
-             console.warn(`VideoRecorder: actualMimeTypeRef.current was empty and no chunks to infer from. Falling back to: ${blobMimeType}`);
-        }
-        console.log(`VideoRecorder: Creating blob with type: ${blobMimeType}. Chunks count: ${recordedChunksRef.current.length}`);
-        
-        const blob = new Blob(recordedChunksRef.current, { type: blobMimeType });
-        console.log(`VideoRecorder: Recorded Blob created. Size: ${blob.size}, Type: ${blob.type}`);
-
-        if (blob.size === 0) {
-            console.warn("VideoRecorder: Recorded blob size is 0 after creation. This often indicates an issue with MediaRecorder on iOS or an extremely short recording.");
-            setError("Recorded video is empty. This might be due to device limitations (common on iOS if recorder didn't start correctly) or if the recording was too short. Please try again, ensuring you record for a few seconds. If the issue persists on an iOS device, it may be related to specific OS media handling. Try disabling Low Power Mode.");
-            setRecordingState('error');
-            return;
-        }
-
-        setRecordedVideoBlob(blob);
-        const url = URL.createObjectURL(blob);
-        setRecordedVideoUrl(url);
-
-        if (videoPreviewRef.current) {
-          videoPreviewRef.current.srcObject = null; 
-          videoPreviewRef.current.src = ""; 
-          videoPreviewRef.current.src = url; 
-          videoPreviewRef.current.controls = true;
-          videoPreviewRef.current.muted = false; 
-          videoPreviewRef.current.setAttribute('playsinline', 'true'); 
-          videoPreviewRef.current.removeAttribute('autoplay');
-
-
-          videoPreviewRef.current.onloadedmetadata = async () => {
-             console.log("VideoRecorder: Video metadata loaded successfully for preview.");
-             if(videoPreviewRef.current && videoPreviewRef.current.duration > 0 && Number.isFinite(videoPreviewRef.current.duration)) {
-                const videoDuration = Math.round(videoPreviewRef.current.duration);
-                console.log(`VideoRecorder: Actual video duration from metadata: ${videoDuration}s`);
-                // Do not setDuration(videoDuration) here if we prefer timer based duration
-                await generatePotentialThumbnails(url, videoDuration); // Use actual reported duration for thumbnails if valid
-             } else if (videoPreviewRef.current) {
-                console.warn("VideoRecorder: Video duration is 0 or invalid after loading metadata for preview. Using timer duration for thumbnails.");
-                // setDuration(0); // Duration state is already timer based
-                await generatePotentialThumbnails(url, duration); // Fallback to timer duration
-             }
-             setRecordingState('stopped'); 
-          };
-          videoPreviewRef.current.onerror = (e) => {
-            console.error("VideoRecorder: Error loading recorded video in preview element. Event:", e);
-            setError("Could not load the recorded video for preview and thumbnail generation. The recording might be corrupted or in an unsupported format for preview. This can occur on some mobile devices.");
-            setRecordingState('error'); 
+    console.log("VideoRecorder: Calling mediaRecorderRef.current.start()...");
+    mediaRecorderRef.current.start(); 
+    console.log(`VideoRecorder: MediaRecorder state immediately after start() call: ${mediaRecorderRef.current.state}`);
+    
+    setTimeout(() => {
+      if (mediaRecorderRef.current) {
+          console.log(`VideoRecorder: MediaRecorder state after 100ms: ${mediaRecorderRef.current.state}`);
+          if (mediaRecorderRef.current.state !== 'recording' && recordingState !== 'error') {
+               console.warn("VideoRecorder: MediaRecorder NOT in 'recording' state 100ms after start(), and no explicit error state yet. Current app recordingState:", recordingState);
+               if (mediaRecorderRef.current.state === 'inactive' && recordedChunksRef.current.length === 0) {
+                   setError("Recording failed to start or stopped immediately. This can happen on iOS. Please check console logs for MediaRecorder errors and ensure device compatibility and Low Power mode is off.");
+                   setRecordingState('error');
+               }
           }
-          console.log(`VideoRecorder: Setting video preview src to: ${url}. Initiating load.`);
-          videoPreviewRef.current.load(); 
-          await videoPreviewRef.current.play()
-            .then(() => console.log("VideoRecorder: Video preview playback attempt for review initiated."))
-            .catch(playError => {
-              console.warn("VideoRecorder: Error trying to play video preview for review (this may be expected on some browsers without user interaction for non-muted video):", playError);
-            });
-        } else {
-            console.error("VideoRecorder: videoPreviewRef.current is null in onstop handler.");
-            setError("Internal error: Video preview element not found after recording.");
-            setRecordingState('error');
-        }
-      };
-      
-      mediaRecorderRef.current.onerror = (event: Event) => {
-        console.error("VideoRecorder: MediaRecorder.onerror event fired. Event object:", event);
-        let errorDetail = "Unknown recording error.";
-        const castEvent = event as any; 
-        if (castEvent.error && castEvent.error.name && castEvent.error.message) {
-            errorDetail = `Name: ${castEvent.error.name}, Message: ${castEvent.error.message}`;
-            console.error("VideoRecorder: MediaRecorder DOMException Name:", castEvent.error.name);
-            console.error("VideoRecorder: MediaRecorder DOMException Message:", castEvent.error.message);
-        } else if (castEvent.name) { 
-            errorDetail = castEvent.name;
-        } else if (typeof event.type === 'string') {
-             errorDetail = `Event type: ${event.type}`;
-        }
-        setError(`A recording error occurred: ${errorDetail}. Please try again or use a different browser/device. Ensure permissions are granted and Low Power Mode is off if on iOS.`);
-        setRecordingState('error');
-        if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-        console.log("VideoRecorder: MediaRecorder.onerror: Set recordingState to 'error'. Cleared timer.");
-      };
-
-      console.log("VideoRecorder: Calling mediaRecorderRef.current.start()...");
-      mediaRecorderRef.current.start(); 
-      console.log(`VideoRecorder: MediaRecorder state immediately after start() call: ${mediaRecorderRef.current.state}`);
-      
-      setTimeout(() => {
-        if (mediaRecorderRef.current) {
-            console.log(`VideoRecorder: MediaRecorder state after 100ms: ${mediaRecorderRef.current.state}`);
-            if (mediaRecorderRef.current.state !== 'recording' && recordingState !== 'error') {
-                 console.warn("VideoRecorder: MediaRecorder NOT in 'recording' state 100ms after start(), and no explicit error state yet. Current app recordingState:", recordingState);
-                 if (mediaRecorderRef.current.state === 'inactive' && recordedChunksRef.current.length === 0) {
-                     setError("Recording failed to start or stopped immediately. This can happen on iOS. Please check console logs for MediaRecorder errors and ensure device compatibility and Low Power mode is off.");
-                     setRecordingState('error');
-                 }
-            }
-        } else {
-             console.warn("VideoRecorder: MediaRecorder became null within 100ms of starting.");
-        }
-      }, 100);
-
-    } else if (mediaRecorderRef.current?.state === 'recording') {
-        console.log("VideoRecorder: Recording is already in progress.");
-    } else {
-        console.error("VideoRecorder: Could not start recording due to unexpected state or missing stream. Stream active:", mediaStreamRef.current?.active, "Recorder state:", mediaRecorderRef.current?.state);
-        setError("Could not start recording. Please ensure camera/mic are enabled and try again.");
-        setRecordingState('error');
-    }
+      } else {
+           console.warn("VideoRecorder: MediaRecorder became null within 100ms of starting.");
+      }
+    }, 100);
   };
 
   const stopRecording = () => {
@@ -921,5 +926,7 @@ export default function VideoRecorder() {
     </div>
   );
 }
+
+    
 
     
