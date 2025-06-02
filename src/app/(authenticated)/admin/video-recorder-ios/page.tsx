@@ -1,17 +1,20 @@
 
 "use client";
 
-import { useEffect, useRef, useState, ChangeEvent } from "react";
-import { getStorage, ref as storageRefFirebase, uploadBytesResumable, getDownloadURL as getFirebaseDownloadURL, UploadTaskSnapshot } from "firebase/storage"; // Renamed to avoid conflict with internal ref
+import { useEffect, useRef, useState, ChangeEvent, FormEvent } from "react";
+import { getStorage, ref as storageRefFirebase, uploadBytesResumable, getDownloadURL as getFirebaseDownloadURL, UploadTaskSnapshot } from "firebase/storage";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Video, Mic, Square, Download, UploadCloud, AlertCircle, RotateCw, Camera } from "lucide-react";
+import { Loader2, Video, Mic, Square, Download, UploadCloud, AlertCircle, RotateCw, Camera, RefreshCcw } from "lucide-react";
 import { storage as firebaseStorage } from "@/lib/firebase/config"; 
+import { addVideoMetadataFromIOSAction } from "./actions";
+import { v4 as uuidv4 } from 'uuid';
 
 export default function VideoRecorderIOSPage() {
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
@@ -21,11 +24,15 @@ export default function VideoRecorderIOSPage() {
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
   
-  const { user, isAdmin, loading: authLoading } = useAuth();
+  const { user, isAdmin, loading: authLoading, doctorProfile } = useAuth();
   const router = useRouter();
 
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [keywords, setKeywords] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -85,6 +92,7 @@ export default function VideoRecorderIOSPage() {
     return () => {
       mediaStream?.getTracks().forEach(track => track.stop());
       if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, isAdmin]);
@@ -105,21 +113,24 @@ export default function VideoRecorderIOSPage() {
   };
 
   const getSupportedMimeType = () => {
+    const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     const isIOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) && !(window as any).MSStream;
-    console.log("VideoRecorderIOS: isIOS:", isIOS);
+    
+    console.log("VideoRecorderIOS: isIOS:", isIOS, "isSafari:", isSafari);
 
-    const types = (isIOS || (typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent)))
+    const types = (isIOS || isSafari)
       ? [ 
-          'video/mp4;codecs=avc1.4D401E',
-          'video/mp4;codecs=avc1.42E01E',
+          'video/mp4;codecs=avc1.4D401E', // H.264 Baseline
+          'video/mp4;codecs=avc1.42E01E', // H.264 Main
           'video/mp4;codecs=h264',
-          'video/mp4',
-          'video/quicktime', 
+          'video/mp4', // Generic MP4 - often the most reliable on iOS for recording
+          'video/quicktime', // MOV
+          // WebM as last resort for iOS/Safari, unlikely to work for recording
           'video/webm;codecs=vp9,opus',
           'video/webm;codecs=vp8,opus',
           'video/webm',
         ]
-      : [ 
+      : [ // Prioritize WebM for non-iOS/Safari
           'video/webm;codecs=vp9,opus',
           'video/webm;codecs=vp8,opus',
           'video/webm',
@@ -155,7 +166,7 @@ export default function VideoRecorderIOSPage() {
     if (videoPreviewRef.current && videoPreviewRef.current.srcObject !== mediaStream) {
         console.log("VideoRecorderIOS: Resetting video preview srcObject to live stream for recording.");
         videoPreviewRef.current.srcObject = mediaStream;
-        videoPreviewRef.current.muted = true; // Ensure it's muted for autoplay
+        videoPreviewRef.current.muted = true; 
         videoPreviewRef.current.play().catch(e => console.warn("Error re-playing live preview for recording:", e));
     }
 
@@ -173,6 +184,7 @@ export default function VideoRecorderIOSPage() {
       setRecordedVideoBlob(null);
       if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
       setRecordedVideoUrl(null);
+      setRecordingDuration(0);
       setError(null);
       setSuccessMessage(null);
 
@@ -185,6 +197,8 @@ export default function VideoRecorderIOSPage() {
 
       recorder.onstop = () => {
         setIsRecording(false);
+        if(recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+
         const currentMimeType = mediaRecorderRef.current?.mimeType || actualMimeType || 'video/webm';
         console.log("VideoRecorderIOS: onstop - Using MimeType for blob:", currentMimeType, "Chunks:", recordedChunksRef.current.length);
         if (recordedChunksRef.current.length === 0) {
@@ -202,10 +216,10 @@ export default function VideoRecorderIOSPage() {
 
          if (videoPreviewRef.current) {
             videoPreviewRef.current.srcObject = null;
-            videoPreviewRef.current.src = newRecordedVideoUrl; // Set src for playback
+            videoPreviewRef.current.src = newRecordedVideoUrl; 
             videoPreviewRef.current.muted = false;
             videoPreviewRef.current.controls = true;
-            videoPreviewRef.current.load(); // Important to reload with new src
+            videoPreviewRef.current.load(); 
             videoPreviewRef.current.play().catch(e => console.warn("VideoRecorderIOS: Error playing recorded video for review", e));
         }
       };
@@ -213,10 +227,16 @@ export default function VideoRecorderIOSPage() {
         console.error("VideoRecorderIOS: MediaRecorder error:", event);
         setError("A recording error occurred. Please try again. Check console for details.");
         setIsRecording(false);
+        if(recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       }
 
       recorder.start();
       setIsRecording(true);
+      let seconds = 0;
+      recordingTimerRef.current = setInterval(() => {
+          seconds++;
+          setRecordingDuration(seconds);
+      }, 1000);
       console.log("VideoRecorderIOS: MediaRecorder started. State:", recorder.state);
     } catch (e) {
         console.error("VideoRecorderIOS: Error instantiating MediaRecorder:", e);
@@ -233,15 +253,38 @@ export default function VideoRecorderIOSPage() {
       console.log("VideoRecorderIOS: Stop called but recorder not in 'recording' state. Current state:", mediaRecorderRef.current?.state);
     }
     setIsRecording(false); 
+    if(recordingTimerRef.current) clearInterval(recordingTimerRef.current);
   };
 
   const handleRotatePreview = () => {
     setPreviewRotation(current => (current + 90) % 360);
   };
 
+  const resetRecorder = async () => {
+    stopRecording();
+    if(mediaStream) {
+      mediaStream.getTracks().forEach(track => track.stop());
+    }
+    setMediaStream(null);
+    setRecordedVideoBlob(null);
+    if(recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
+    setRecordedVideoUrl(null);
+    recordedChunksRef.current = [];
+    setRecordingDuration(0);
+    setTitle('');
+    setDescription('');
+    setKeywords('');
+    setError(null);
+    setSuccessMessage(null);
+    setIsUploading(false);
+    setUploadProgress(0);
+    setPreviewRotation(0);
+    await requestPermissionsAndSetup(); // Re-initialize camera
+  };
+
   const saveVideoLocally = () => {
     if (!recordedVideoBlob) return;
-    const urlToSave = recordedVideoUrl || URL.createObjectURL(recordedVideoBlob); // Fallback just in case
+    const urlToSave = recordedVideoUrl || URL.createObjectURL(recordedVideoBlob); 
     const a = document.createElement("a");
     a.href = urlToSave;
     const safeTitle = title.replace(/[^a-z0-9_]+/gi, '_').toLowerCase() || 'ios_recording';
@@ -254,10 +297,11 @@ export default function VideoRecorderIOSPage() {
     setSuccessMessage(`Video saved locally as ${a.download}`);
   };
 
-  const uploadToFirebase = async () => {
-    if (!recordedVideoBlob || !user) {
-        setError("No video to upload or user not authenticated. Please ensure you are logged in.");
-        console.error("VideoRecorderIOS: Upload cancelled. No video blob or user not found.", { hasBlob: !!recordedVideoBlob, hasUser: !!user });
+  const handleUploadSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!recordedVideoBlob || !user || !doctorProfile) {
+        setError("No video to upload, user not authenticated, or doctor profile missing.");
+        console.error("VideoRecorderIOS: Upload cancelled.", { hasBlob: !!recordedVideoBlob, hasUser: !!user, hasDoctorProfile: !!doctorProfile });
         return;
     }
     if (!title.trim()) {
@@ -269,21 +313,19 @@ export default function VideoRecorderIOSPage() {
     setError(null);
     setSuccessMessage(null);
 
-    const currentUserId = user.uid;
-    console.log(`VideoRecorderIOS: Preparing to upload. User UID: ${currentUserId}`);
-    console.log("VideoRecorderIOS: Current user object from useAuth:", JSON.stringify(user, null, 2));
-
+    const currentUserId = doctorProfile.uid;
+    const currentDoctorName = doctorProfile.displayName || doctorProfile.email || "Unknown Doctor";
 
     try {
       const safeTitle = title.replace(/[^a-z0-9_]+/gi, '_').toLowerCase();
       const extension = getFileExtensionFromMimeType(recordedVideoBlob.type || actualMimeType);
       const timestamp = Date.now();
-      // Modified filename to match working storage rules
-      const filename = `videos/${currentUserId}/${safeTitle}_ios_${timestamp}.${extension}`;
+      const videoFileName = `${safeTitle}_ios_${timestamp}.${extension}`;
+      const storagePath = `videos/${currentUserId}/${videoFileName}`;
       
-      console.log(`VideoRecorderIOS: Attempting to upload to Firebase Storage path: ${filename}`);
+      console.log(`VideoRecorderIOS: Attempting to upload to Firebase Storage path: ${storagePath}`);
       
-      const fileRef = storageRefFirebase(firebaseStorage, filename);
+      const fileRef = storageRefFirebase(firebaseStorage, storagePath);
       const uploadTask = uploadBytesResumable(fileRef, recordedVideoBlob);
 
       uploadTask.on('state_changed',
@@ -293,32 +335,55 @@ export default function VideoRecorderIOSPage() {
         },
         (uploadError: any) => {
           console.error("VideoRecorderIOS: Firebase Upload failed:", uploadError);
-          console.error("VideoRecorderIOS: Firebase Upload error code:", uploadError.code);
-          console.error("VideoRecorderIOS: Firebase Upload error message:", uploadError.message);
-          if (uploadError.code === 'storage/unauthorized') {
-            setError(`Upload failed: You do not have permission to upload to this location (${filename}). Please check your Firebase Storage security rules to ensure the authenticated user (UID: ${currentUserId}) has write access to this specific path.`);
-          } else {
-            setError(`Upload failed: ${uploadError.message}`);
-          }
+          setError(`Upload failed: ${uploadError.message}`);
           setIsUploading(false);
         },
         async () => {
           const downloadURL = await getFirebaseDownloadURL(uploadTask.snapshot.ref);
           console.log("VideoRecorderIOS: Video uploaded successfully! URL:", downloadURL);
-          setSuccessMessage(`Video "${title}" uploaded successfully to Firebase Storage! Path: ${filename}. It won't appear in the app's video list yet as this is a direct upload.`);
-          setIsUploading(false);
-          setRecordedVideoBlob(null);
-          if(recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
-          setRecordedVideoUrl(null);
-          setTitle('');
+          
+          const videoId = uuidv4();
+          const videoMetaData = {
+            videoId,
+            title,
+            description,
+            keywords: keywords.split(',').map(k => k.trim()).filter(Boolean),
+            videoUrl: downloadURL,
+            storagePath,
+            videoSize: recordedVideoBlob.size,
+            videoType: recordedVideoBlob.type || actualMimeType,
+            recordingDuration: recordingDuration,
+            doctorId: currentUserId,
+            doctorName: currentDoctorName,
+          };
+
+          const result = await addVideoMetadataFromIOSAction(videoMetaData);
+
+          if (result.success) {
+            setSuccessMessage(`Video "${title}" uploaded and metadata saved! It should now appear in the video list.`);
+            setIsUploading(false);
+            // Reset relevant states for a new recording
+            setRecordedVideoBlob(null);
+            if(recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
+            setRecordedVideoUrl(null);
+            setTitle('');
+            setDescription('');
+            setKeywords('');
+            setRecordingDuration(0);
+            recordedChunksRef.current = [];
+            // Optionally, re-setup camera or provide a button to do so
+          } else {
+            throw new Error(result.error || "Failed to save video metadata to Firestore.");
+          }
         }
       );
     } catch (err) {
-      console.error("VideoRecorderIOS: Upload preparation failed:", err);
-      setError(`Upload preparation failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error("VideoRecorderIOS: Upload or metadata saving failed:", err);
+      setError(`Operation failed: ${err instanceof Error ? err.message : String(err)}`);
       setIsUploading(false);
     }
   };
+
 
   if (authLoading) {
     return <div className="flex items-center justify-center h-screen"><Loader2 className="h-12 w-12 animate-spin text-primary" /></div>;
@@ -335,7 +400,7 @@ export default function VideoRecorderIOSPage() {
             <Camera size={28} className="text-primary"/> iOS Video Recorder
           </CardTitle>
           <CardDescription>
-            Optimized for recording on iPhone, iPad, and Safari on macOS. Preview rotation only affects display, not the final recording.
+            Optimized for recording on iPhone, iPad, and Safari on macOS. Preview rotation only affects display, not the final recording. Videos recorded here will be saved and listed.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -343,6 +408,7 @@ export default function VideoRecorderIOSPage() {
             Debug Status: mediaStream is {mediaStream ? 'available' : 'NOT available'}. 
             isRecording: {isRecording.toString()}.
             Recorded Blob: {recordedVideoBlob ? `${(recordedVideoBlob.size / 1024 / 1024).toFixed(2)} MB (${recordedVideoBlob.type})` : 'No'}.
+            Duration: {recordingDuration}s.
           </p>
           {error && (
             <Alert variant="destructive">
@@ -367,7 +433,7 @@ export default function VideoRecorderIOSPage() {
               className="w-full aspect-video rounded-md border bg-slate-900 object-contain transition-transform duration-300 ease-in-out"
               style={{ transform: `rotate(${previewRotation}deg)` }}
             />
-            {(mediaStream || recordedVideoBlob) && ( // Show rotate button if preview is active or video recorded
+            {(mediaStream || recordedVideoBlob) && ( 
               <Button 
                   onClick={handleRotatePreview} 
                   variant="outline" 
@@ -378,9 +444,14 @@ export default function VideoRecorderIOSPage() {
                   <RotateCw size={18} />
               </Button>
             )}
+             {isRecording && (
+                <div className="absolute top-4 right-4 bg-red-600 text-white px-2 py-1 rounded-md text-xs font-mono shadow-md flex items-center gap-1">
+                    <Mic size={14} className="animate-pulse" /> REC {String(Math.floor(recordingDuration/60)).padStart(2,'0')}:{String(recordingDuration%60).padStart(2,'0')}
+                </div>
+            )}
           </div>
 
-          {mediaStream ? (
+          {mediaStream && !recordedVideoBlob && !successMessage ? (
             <div className="flex flex-col sm:flex-row gap-2">
               {!isRecording ? (
                 <Button
@@ -400,31 +471,58 @@ export default function VideoRecorderIOSPage() {
                 </Button>
               )}
             </div>
-          ) : (
+          ) : !successMessage && (
             <Button onClick={requestPermissionsAndSetup} variant="outline" className="w-full gap-2">
                 <Camera size={18} /> Setup Camera & Mic
             </Button>
           )}
+          {successMessage && (
+             <Button onClick={resetRecorder} variant="default" className="w-full gap-2">
+                <RefreshCcw size={18} /> Record Another Video
+            </Button>
+          )}
 
 
-          {recordedVideoBlob && !isUploading && (
-            <div className="space-y-4 pt-4 border-t">
-              <h3 className="text-lg font-semibold">Review & Save Recording</h3>
+          {recordedVideoBlob && !isUploading && !successMessage && (
+            <form onSubmit={handleUploadSubmit} className="space-y-4 pt-4 border-t" id="ios-upload-form">
+              <h3 className="text-lg font-semibold">Review & Upload Recording</h3>
               <p className="text-sm text-muted-foreground">
-                Video Type: {recordedVideoBlob.type || actualMimeType || "N/A"}, Size: {(recordedVideoBlob.size / 1024 / 1024).toFixed(2)} MB
+                Video Type: {recordedVideoBlob.type || actualMimeType || "N/A"}, Size: {(recordedVideoBlob.size / 1024 / 1024).toFixed(2)} MB, Duration: {recordingDuration}s
               </p>
               <div className="space-y-1">
-                <Label htmlFor="videoTitle">Video Title (for filename)</Label>
+                <Label htmlFor="videoTitle">Video Title <span className="text-destructive">*</span></Label>
                 <Input 
                   id="videoTitle" 
                   type="text" 
                   value={title} 
                   onChange={(e: ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)} 
                   placeholder="Enter a title for the video"
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="videoDescription">Description</Label>
+                <Textarea 
+                  id="videoDescription" 
+                  value={description} 
+                  onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)} 
+                  placeholder="Summarize the video content"
+                  rows={3}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="videoKeywords">Keywords (comma-separated)</Label>
+                <Input 
+                  id="videoKeywords" 
+                  type="text" 
+                  value={keywords} 
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setKeywords(e.target.value)} 
+                  placeholder="e.g., cardiology, ios, tutorial"
                 />
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
                 <Button
+                  type="button"
                   onClick={saveVideoLocally}
                   variant="outline"
                   className="flex-1 gap-2"
@@ -432,14 +530,16 @@ export default function VideoRecorderIOSPage() {
                   <Download size={18} /> Save to Device
                 </Button>
                 <Button
-                  onClick={uploadToFirebase}
-                  disabled={!title.trim()}
+                  type="submit"
+                  form="ios-upload-form"
+                  disabled={!title.trim() || isUploading}
                   className="flex-1 gap-2 bg-primary hover:bg-primary/90 text-primary-foreground"
                 >
-                  <UploadCloud size={18} /> Upload to Firebase
+                  {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud size={18} />}
+                  {isUploading ? 'Uploading...' : 'Upload to App'}
                 </Button>
               </div>
-            </div>
+            </form>
           )}
           {isUploading && (
             <div className="space-y-2 pt-4 border-t">
@@ -456,8 +556,3 @@ export default function VideoRecorderIOSPage() {
     </div>
   );
 }
-    
-
-    
-
-    

@@ -29,7 +29,7 @@ export interface VideoMeta {
   videoUrl: string;
   thumbnailUrl: string;
   duration: string; 
-  recordingDuration?: number; 
+  recordingDuration?: number; // duration in seconds, as a number
   tags: string[];
   createdAt: string; 
   viewCount: number;
