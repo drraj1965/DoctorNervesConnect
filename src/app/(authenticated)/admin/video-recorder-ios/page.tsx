@@ -16,7 +16,7 @@ import { addVideoMetadataFromIOSAction } from "./actions";
 import { v4 as uuidv4 } from 'uuid';
 import Image from "next/image";
 import { getStorage, ref as storageRefFirebase, uploadBytesResumable, getDownloadURL as getFirebaseDownloadURL, UploadTaskSnapshot } from "firebase/storage";
-import { useToast } from "@/hooks/use-toast"; // Import useToast
+import { useToast } from "@/hooks/use-toast";
 
 const NUM_THUMBNAILS_TO_GENERATE = 5;
 
@@ -29,19 +29,19 @@ export default function VideoRecorderIOSPage() {
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [recordingDuration, setRecordingDuration] = useState(0); // Updated by timer
   
   const { user, isAdmin, loading: authLoading, doctorProfile } = useAuth();
   const router = useRouter();
-  const { toast } = useToast(); // Initialize toast
+  const { toast } = useToast();
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [keywords, setKeywords] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [uploadSuccessMessage, setUploadSuccessMessage] = useState<string | null>(null); // Renamed for clarity
+  const [uploadSuccessMessage, setUploadSuccessMessage] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [isUploading, setIsUploading] = useState(false); // Corrected initialization
+  const [isUploading, setIsUploading] = useState(false);
   const [previewRotation, setPreviewRotation] = useState(0);
   const actualMimeTypeRef = useRef<string>('');
 
@@ -80,14 +80,13 @@ export default function VideoRecorderIOSPage() {
       setMediaStream(stream);
       if (videoPreviewRef.current) {
         videoPreviewRef.current.srcObject = stream;
-        videoPreviewRef.current.src = ""; // Clear any previous blob src
+        videoPreviewRef.current.src = ""; 
         videoPreviewRef.current.muted = true;
         videoPreviewRef.current.controls = false;
         videoPreviewRef.current.setAttribute('playsinline', 'true');
         videoPreviewRef.current.setAttribute('autoplay', 'true');
         await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorderIOS: Error playing live preview:", e));
       }
-      // Do not reset previewRotation here, allow user to set it for live view first
       console.log("VideoRecorderIOS: Permissions granted and stream setup complete.");
     } catch (err) {
       console.error("VideoRecorderIOS: Error accessing media devices:", err);
@@ -132,10 +131,11 @@ export default function VideoRecorderIOSPage() {
 
     const types = (isIOS || isSafari)
       ? [ 
-          // Prioritize MP4 for iOS/Safari for recording reliability
+          // Prioritize WebM for iOS/Safari if available and good quality
           'video/webm;codecs=vp9,opus', 
           'video/webm;codecs=vp8,opus', 
           'video/webm',     
+          // Fallback to MP4 for iOS/Safari for recording reliability if WebM fails
           'video/mp4;codecs=avc1.4D401E', 
           'video/mp4;codecs=avc1.42E01E', 
           'video/mp4;codecs=h264',
@@ -179,7 +179,7 @@ export default function VideoRecorderIOSPage() {
     if (videoPreviewRef.current && videoPreviewRef.current.srcObject !== mediaStream) {
         console.log("VideoRecorderIOS: Resetting video preview srcObject to live stream for recording.");
         videoPreviewRef.current.srcObject = mediaStream;
-        videoPreviewRef.current.src = ""; // Clear any blob src
+        videoPreviewRef.current.src = ""; 
         videoPreviewRef.current.muted = true; 
         videoPreviewRef.current.controls = false;
         videoPreviewRef.current.setAttribute('playsinline', 'true');
@@ -193,9 +193,10 @@ export default function VideoRecorderIOSPage() {
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setSelectedThumbnailIndex(null);
+    recordedChunksRef.current = []; // Crucial reset
 
     const mimeType = getSupportedMimeType();
-    actualMimeTypeRef.current = mimeType;
+    actualMimeTypeRef.current = mimeType; // Store the attempted MIME type
     console.log("VideoRecorderIOS: Attempting to record with MIME type:", mimeType || "browser default");
     
     const options: MediaRecorderOptions = {};
@@ -204,24 +205,41 @@ export default function VideoRecorderIOSPage() {
     try {
       const recorder = new MediaRecorder(mediaStream, options);
       mediaRecorderRef.current = recorder;
-      recordedChunksRef.current = [];
-      setRecordingDuration(0);
+      
+      setRecordingDuration(0); // Reset timer duration
       setError(null);
       setUploadSuccessMessage(null);
+
+      recorder.onstart = () => {
+        console.log("VideoRecorderIOS: MediaRecorder.onstart event fired. State:", recorder.state);
+        if (recorder.mimeType) {
+            actualMimeTypeRef.current = recorder.mimeType; // Update with actual MIME type if available
+            console.log("VideoRecorderIOS: Actual MIME type from recorder:", recorder.mimeType);
+        }
+        setIsRecording(true);
+        let seconds = 0;
+        setRecordingDuration(0); // Explicitly set to 0 before starting timer
+        recordingTimerRef.current = setInterval(() => {
+            seconds++;
+            setRecordingDuration(seconds);
+        }, 1000);
+      };
 
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           recordedChunksRef.current.push(event.data);
-          console.log(`VideoRecorderIOS: ondataavailable - chunk size ${event.data.size}`);
+          console.log(`VideoRecorderIOS: ondataavailable - chunk size ${event.data.size}, total chunks ${recordedChunksRef.current.length}`);
         }
       };
 
       recorder.onstop = async () => {
         setIsRecording(false);
         if(recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+        // The `recordingDuration` state now holds the final timer-based duration.
 
-        const currentMimeType = mediaRecorderRef.current?.mimeType || actualMimeTypeRef.current || 'video/webm';
-        console.log("VideoRecorderIOS: onstop - Using MimeType for blob:", currentMimeType, "Chunks:", recordedChunksRef.current.length);
+        const currentMimeType = actualMimeTypeRef.current || mediaRecorderRef.current?.mimeType || (getSupportedMimeType().startsWith('video/webm') ? 'video/webm' : 'video/mp4');
+        console.log("VideoRecorderIOS: onstop - Using MimeType for blob:", currentMimeType, "Chunks:", recordedChunksRef.current.length, "Timer duration:", recordingDuration, "s");
+        
         if (recordedChunksRef.current.length === 0) {
             setError("No video data was recorded. This can happen on iOS if recording is too short or due to browser limitations. Please try recording for at least a few seconds. Ensure Low Power Mode is off.");
             return;
@@ -236,24 +254,46 @@ export default function VideoRecorderIOSPage() {
         setRecordedVideoUrl(newRecordedVideoUrl);
 
          if (videoPreviewRef.current) {
-            videoPreviewRef.current.srcObject = null; // Important: switch from live stream
+            videoPreviewRef.current.srcObject = null; 
             videoPreviewRef.current.src = newRecordedVideoUrl; 
             videoPreviewRef.current.muted = false;
-            videoPreviewRef.current.controls = true; // Show controls for recorded preview
-            videoPreviewRef.current.load(); // Ensure new src is loaded
+            videoPreviewRef.current.controls = true; 
+            videoPreviewRef.current.load(); 
             
-            // Do not reset previewRotation here. The existing rotation should apply to the new src.
-
             videoPreviewRef.current.onloadedmetadata = async () => {
-                const videoDuration = Math.round(videoPreviewRef.current?.duration || 0);
-                setRecordingDuration(videoDuration); // Update duration from actual video
-                await generateThumbnailsFromVideo(newRecordedVideoUrl, videoDuration);
-                // Explicitly play after metadata loaded, and controls are visible
+                const videoElementReportedDuration = videoPreviewRef.current?.duration;
+                console.log(`VideoRecorderIOS: onloadedmetadata - videoElementReportedDuration: ${videoElementReportedDuration}s, timer-based recordingDuration: ${recordingDuration}s`);
+                
+                let durationForThumbnails = recordingDuration; // Default to timer duration
+                if (videoElementReportedDuration && Number.isFinite(videoElementReportedDuration) && videoElementReportedDuration > 0.1) {
+                    // If element reports a valid duration and it's not suspiciously zero
+                    durationForThumbnails = videoElementReportedDuration;
+                } else if (recordingDuration <= 0 && videoElementReportedDuration && Number.isFinite(videoElementReportedDuration) && videoElementReportedDuration > 0) {
+                    // If timer was 0, but element has duration (e.g. loaded pre-recorded file)
+                    durationForThumbnails = videoElementReportedDuration;
+                } else if (recordingDuration <= 0 && (!videoElementReportedDuration || videoElementReportedDuration <=0) && blob.size > 0) {
+                    // Both durations are zero, but blob has size - try to get one thumbnail
+                    durationForThumbnails = 0.1; 
+                    console.warn("VideoRecorderIOS: Both timer and video element report zero duration, but blob exists. Attempting single thumbnail.");
+                }
+
+
+                console.log(`VideoRecorderIOS: Using effective duration for thumbnails: ${durationForThumbnails}s`);
+                if (durationForThumbnails > 0 || (durationForThumbnails === 0 && blob.size > 0) ) {
+                     await generateThumbnailsFromVideo(newRecordedVideoUrl, durationForThumbnails);
+                } else {
+                    console.warn("VideoRecorderIOS: Not generating thumbnails as effective duration is zero or blob might be empty.");
+                }
                 videoPreviewRef.current?.play().catch(e => console.warn("VideoRecorderIOS: Error playing recorded video for review", e));
             };
              videoPreviewRef.current.onerror = (e) => {
                  console.error("VideoRecorderIOS: Error loading recorded video in preview for onloadedmetadata. Event:", e);
-                 setError("Could not load recorded video for review. File may be corrupt or unsupported for preview.");
+                 setError("Could not load recorded video for review. File may be corrupt or unsupported for preview. Try saving locally and check playback.");
+                 // Still attempt thumbnail generation if blob exists, using timer duration.
+                 if (blob.size > 0 && recordingDuration > 0) {
+                    console.warn("VideoRecorderIOS: Preview error, but attempting thumbnails with timer duration.");
+                    generateThumbnailsFromVideo(newRecordedVideoUrl, recordingDuration);
+                 }
              };
         }
       };
@@ -265,40 +305,33 @@ export default function VideoRecorderIOSPage() {
       }
 
       recorder.start();
-      setIsRecording(true);
-      let seconds = 0;
-      recordingTimerRef.current = setInterval(() => {
-          seconds++;
-          setRecordingDuration(seconds);
-      }, 1000);
       console.log("VideoRecorderIOS: MediaRecorder started. State:", recorder.state);
     } catch (e) {
         console.error("VideoRecorderIOS: Error instantiating MediaRecorder:", e);
-        setError(`Failed to start recorder: ${e instanceof Error ? e.message : String(e)}. Check browser compatibility.`);
+        setError(`Failed to start recorder: ${e instanceof Error ? e.message : String(e)}. Check browser compatibility or permissions.`);
         setIsRecording(false);
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.stop();
-      console.log("VideoRecorderIOS: MediaRecorder stopped.");
+      mediaRecorderRef.current.stop(); // onstop will handle the rest
+      console.log("VideoRecorderIOS: MediaRecorder stop() called. Timer duration was: " + recordingDuration + "s");
     } else {
       console.log("VideoRecorderIOS: Stop called but recorder not in 'recording' state. Current state:", mediaRecorderRef.current?.state);
+      if(recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      setIsRecording(false); // Ensure UI updates if stop is called without active recording
     }
-    // setIsRecording will be set to false in recorder.onstop
   };
 
   const generateThumbnailsFromVideo = async (videoUrl: string, duration: number) => {
-    // This function remains largely the same, but ensure it gracefully handles errors.
-    if (!videoPreviewRef.current || duration < 0.01 && duration !==0 ) { // Allow near-zero for single frame attempt
-        console.warn("VideoRecorderIOS: Cannot generate thumbnails, video element or duration invalid for multiple thumbnails. Duration:", duration);
-         if (duration === 0 && videoUrl) { // Try one frame if duration is absolute zero but URL exists
-            await generateSpecificThumbnail(videoUrl, 0.05, 0); // Try a very early frame
-         }
+    if (!videoPreviewRef.current || (duration <= 0.01 && duration !==0 && !(recordedVideoBlob && recordedVideoBlob.size > 0)) ) {
+        console.warn("VideoRecorderIOS: Cannot generate thumbnails, video element or duration invalid. Duration:", duration);
         return;
     }
-    const videoElement = document.createElement('video'); // Use a temporary video element for generation
+    console.log(`VideoRecorderIOS: Generating ${NUM_THUMBNAILS_TO_GENERATE} thumbnails from video with effective duration: ${duration}s`);
+
+    const videoElement = document.createElement('video');
     videoElement.src = videoUrl;
     videoElement.muted = true;
     videoElement.crossOrigin = "anonymous";
@@ -310,28 +343,41 @@ export default function VideoRecorderIOSPage() {
     const captureFrame = (time: number): Promise<Blob | null> => {
       return new Promise((resolve, reject) => {
         videoElement.currentTime = time;
+        console.log(`VideoRecorderIOS: Thumbnail - seeking to ${time}s`);
         videoElement.onseeked = () => {
+          console.log(`VideoRecorderIOS: Thumbnail - seeked to ${videoElement.currentTime}. Capturing.`);
           const canvas = document.createElement('canvas');
-          canvas.width = videoElement.videoWidth / 3; // Smaller thumbnails
-          canvas.height = videoElement.videoHeight / 3;
+          canvas.width = videoElement.videoWidth / 3 || 160; 
+          canvas.height = videoElement.videoHeight / 3 || 90;
           const ctx = canvas.getContext('2d');
-          if (!ctx) return resolve(null);
-          ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.8);
+          if (!ctx) {
+            console.error("VideoRecorderIOS: Thumbnail - Canvas context not available.");
+            return resolve(null);
+          }
+          try {
+            ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.8);
+          } catch (drawError) {
+            console.error("VideoRecorderIOS: Thumbnail - Error drawing image to canvas", drawError);
+            reject(drawError);
+          }
         };
         videoElement.onerror = (e) => {
-          console.error("Error during thumbnail generation seek/draw:", e);
+          console.error("VideoRecorderIOS: Thumbnail - Error during video element operation for thumbnail:", e);
           reject(e);
         };
-        if(videoElement.readyState >= 2) { // HAVE_CURRENT_DATA or more
-            videoElement.dispatchEvent(new Event('seeked')); // Manually trigger if already seekable
+         // If video already has data, dispatch seeked manually
+        if (videoElement.readyState >= 2) { // HAVE_CURRENT_DATA or more
+            videoElement.dispatchEvent(new Event('seeked'));
         }
       });
     };
     
-    const timePoints = duration > 1 ? 
-      Array(NUM_THUMBNAILS_TO_GENERATE).fill(0).map((_, i) => (duration / (NUM_THUMBNAILS_TO_GENERATE +1)) * (i+1))
-      : [Math.max(0.05, duration / 2)]; // Single thumbnail for very short videos
+    const timePoints = (duration > 0.1 && Number.isFinite(duration)) ?
+      Array(NUM_THUMBNAILS_TO_GENERATE).fill(0).map((_, i) => Math.min(Math.max(0.01, duration - 0.01), (duration / (NUM_THUMBNAILS_TO_GENERATE +1)) * (i+1)) ).map(t => Math.max(0.01, t))
+      : [0.05]; 
+
+    console.log("VideoRecorderIOS: Thumbnail generation time points:", timePoints);
 
     for (let i = 0; i < timePoints.length; i++) {
         try {
@@ -342,25 +388,20 @@ export default function VideoRecorderIOSPage() {
             } else {
                 tempThumbnails.push(null);
                 tempThumbnailBlobs.push(null);
+                 console.warn(`VideoRecorderIOS: Thumbnail generation for time point ${timePoints[i]} resulted in null blob.`);
             }
         } catch (thumbError) {
-            console.error(`VideoRecorderIOS: Error generating thumbnail ${i}:`, thumbError);
+            console.error(`VideoRecorderIOS: Error generating thumbnail ${i} at time ${timePoints[i]}:`, thumbError);
             tempThumbnails.push(null);
             tempThumbnailBlobs.push(null);
         }
     }
-    videoElement.remove(); // Clean up temporary video element
+    videoElement.remove(); 
     setPotentialThumbnails(tempThumbnails);
     setPotentialThumbnailBlobs(tempThumbnailBlobs);
     const firstValidIndex = tempThumbnails.findIndex(t => t !== null);
     setSelectedThumbnailIndex(firstValidIndex !== -1 ? firstValidIndex : null);
-  };
-
-  // Helper for single thumbnail generation if main loop fails
-  const generateSpecificThumbnail = async (videoUrl: string, time: number, index: number) => {
-     // ... (implementation similar to VideoRecorder.tsx or simplified as above)
-     // For brevity, assuming this logic is robust or uses a single element approach
-     console.log(`Attempting to generate specific thumbnail at time ${time} for index ${index}`);
+    console.log("VideoRecorderIOS: Thumbnail generation process completed.");
   };
 
 
@@ -369,7 +410,7 @@ export default function VideoRecorderIOSPage() {
   };
 
   const resetRecorder = async (isFullReset = true) => {
-    stopRecording(); // Ensure recorder is stopped
+    stopRecording(); 
     if (isFullReset && mediaStream) {
       mediaStream.getTracks().forEach(track => track.stop());
       setMediaStream(null);
@@ -384,7 +425,6 @@ export default function VideoRecorderIOSPage() {
     recordedChunksRef.current = [];
     setRecordingDuration(0);
     
-    // Only reset metadata if it's a full reset, not just for re-attempting upload
     if(isFullReset) {
       setTitle('');
       setDescription('');
@@ -392,12 +432,10 @@ export default function VideoRecorderIOSPage() {
     }
 
     setError(null);
-    setUploadSuccessMessage(null); // Clear upload success message on reset
+    setUploadSuccessMessage(null); 
     setIsUploading(false);
     setUploadProgress(0);
-    // Do not reset previewRotation here automatically, user might want to keep it for next recording.
-    // Or reset if it's a full UI reset: setPreviewRotation(0)
-    
+        
     if (videoPreviewRef.current) {
         videoPreviewRef.current.srcObject = null;
         videoPreviewRef.current.src = "";
@@ -410,7 +448,10 @@ export default function VideoRecorderIOSPage() {
   };
 
   const saveVideoLocally = () => {
-    if (!recordedVideoBlob) return;
+    if (!recordedVideoBlob) {
+        toast({ variant: "destructive", title: "No Video", description: "No recorded video to save." });
+        return;
+    }
     const urlToSave = recordedVideoUrl || URL.createObjectURL(recordedVideoBlob); 
     const a = document.createElement("a");
     a.href = urlToSave;
@@ -422,11 +463,10 @@ export default function VideoRecorderIOSPage() {
     document.body.removeChild(a);
     if (!recordedVideoUrl) URL.revokeObjectURL(urlToSave); 
     
-    toast({ // Use toast for local save success
+    toast({ 
       title: "Video Saved Locally",
       description: `Video saved as ${a.download}. You can still proceed to upload it.`,
     });
-    // Do NOT setUploadSuccessMessage here, as it hides the upload form.
   };
 
   const handleUploadSubmit = async (e: FormEvent) => {
@@ -441,7 +481,7 @@ export default function VideoRecorderIOSPage() {
         return;
     }
     if (selectedThumbnailIndex === null || !potentialThumbnailBlobs[selectedThumbnailIndex]) {
-        setError("Please select a thumbnail for the video.");
+        setError("Please select a thumbnail for the video, or wait for thumbnails to generate.");
         return;
     }
     const selectedThumbnailBlob = potentialThumbnailBlobs[selectedThumbnailIndex!];
@@ -453,7 +493,7 @@ export default function VideoRecorderIOSPage() {
     setIsUploading(true);
     setUploadProgress(0);
     setError(null);
-    setUploadSuccessMessage(null); // Clear previous success message
+    setUploadSuccessMessage(null);
 
     const currentUserId = doctorProfile.uid;
     console.log("VideoRecorderIOS: Current User for upload:", JSON.stringify(user));
@@ -479,7 +519,7 @@ export default function VideoRecorderIOSPage() {
       videoUploadTask.on('state_changed',
         (snapshot: UploadTaskSnapshot) => {
           const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          setUploadProgress(progress * 0.8); // 80% for video upload
+          setUploadProgress(progress * 0.8); 
         },
         (uploadError: any) => {
           console.error("VideoRecorderIOS: Firebase Video Upload failed:", uploadError);
@@ -497,7 +537,7 @@ export default function VideoRecorderIOSPage() {
           thumbUploadTask.on('state_changed', 
             (snapshot: UploadTaskSnapshot) => {
                 const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                setUploadProgress(80 + (progress * 0.2)); // Remaining 20% for thumbnail
+                setUploadProgress(80 + (progress * 0.2)); 
             },
             (thumbError: any) => {
                 console.error("VideoRecorderIOS: Firebase Thumbnail Upload failed:", thumbError);
@@ -509,7 +549,7 @@ export default function VideoRecorderIOSPage() {
                 console.log("VideoRecorderIOS: Thumbnail uploaded successfully! URL:", thumbDownloadURL);
 
                 const videoId = uuidv4();
-                const videoMetaData = { 
+                const videoMetaDataForAction = { 
                     videoId,
                     title,
                     description,
@@ -525,11 +565,12 @@ export default function VideoRecorderIOSPage() {
                     doctorName: currentDoctorName,
                 };
 
-                const result = await addVideoMetadataFromIOSAction(videoMetaData);
+                const result = await addVideoMetadataFromIOSAction(videoMetaDataForAction);
 
                 if (result.success) {
                     setUploadSuccessMessage(`Video "${title}" uploaded and metadata saved! It should now appear in the video list.`);
                     setIsUploading(false);
+                    // Reset parts of the state, but not the entire stream unless user explicitly resets
                     setTitle(''); setDescription(''); setKeywords(''); setSelectedThumbnailIndex(null);
                     setRecordedVideoBlob(null);
                     if(recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
@@ -567,6 +608,7 @@ export default function VideoRecorderIOSPage() {
   const showUploadForm = recordedVideoBlob && !isUploading && !uploadSuccessMessage;
   const showLiveRecordControls = mediaStream && !recordedVideoBlob && !uploadSuccessMessage;
   const showSetupCamera = !mediaStream && !recordedVideoBlob && !uploadSuccessMessage;
+  const actualBlobTypeForDisplay = recordedVideoBlob?.type || actualMimeTypeRef.current || 'N/A';
 
   return (
     <div className="container mx-auto p-4 space-y-6">
@@ -583,8 +625,8 @@ export default function VideoRecorderIOSPage() {
           <p className="text-xs text-muted-foreground border p-2 rounded-md">
             Debug Status: mediaStream is {mediaStream ? 'available' : 'NOT available'}. 
             isRecording: {isRecording.toString()}.
-            Recorded Blob: {recordedVideoBlob ? `${(recordedVideoBlob.size / 1024 / 1024).toFixed(2)} MB (Type: ${recordedVideoBlob.type || actualMimeTypeRef.current || 'N/A'})` : 'No'}.
-            Duration: {recordingDuration}s. Rotation: {previewRotation}°.
+            Recorded Blob: {recordedVideoBlob ? `${(recordedVideoBlob.size / 1024 / 1024).toFixed(2)} MB (Type: ${actualBlobTypeForDisplay})` : 'No'}.
+            Timer Duration: {recordingDuration}s. Rotation: {previewRotation}°.
           </p>
           {error && (
             <Alert variant="destructive">
@@ -605,14 +647,13 @@ export default function VideoRecorderIOSPage() {
             <video
               ref={videoPreviewRef}
               autoPlay
-              muted={!recordedVideoUrl} // Unmute for recorded preview, mute for live
+              muted={!recordedVideoUrl} 
               playsInline
-              controls={!!recordedVideoUrl} // Show controls only for recorded video
+              controls={!!recordedVideoUrl} 
               className="w-full aspect-video rounded-md border bg-slate-900 object-contain transition-transform duration-300 ease-in-out"
               style={{ transform: `rotate(${previewRotation}deg)` }}
-              key={recordedVideoUrl || 'live_preview'} // Key change to force re-render on src change
+              key={recordedVideoUrl || 'live_preview'} 
             />
-            {/* Rotate button visible for live preview AND recorded preview if not uploading */}
             {((mediaStream && !recordedVideoBlob) || recordedVideoBlob) && !isUploading && ( 
               <Button 
                   onClick={handleRotatePreview} 
@@ -636,7 +677,7 @@ export default function VideoRecorderIOSPage() {
               {!isRecording ? (
                 <Button
                   onClick={startRecording}
-                  disabled={isUploading} // Should not be uploading at this stage
+                  disabled={isUploading} 
                   className="flex-1 gap-2 bg-green-600 hover:bg-green-700 text-white"
                 >
                   <Mic size={18} /> Start Recording
@@ -644,7 +685,7 @@ export default function VideoRecorderIOSPage() {
               ) : (
                 <Button
                   onClick={stopRecording}
-                  disabled={isUploading} // Should not be uploading
+                  disabled={isUploading} 
                   className="flex-1 gap-2 bg-red-600 hover:bg-red-700 text-white"
                 >
                   <Square size={18} /> Stop Recording
@@ -670,10 +711,10 @@ export default function VideoRecorderIOSPage() {
             <form onSubmit={handleUploadSubmit} className="space-y-4 pt-4 border-t" id="ios-upload-form">
               <h3 className="text-lg font-semibold">Review & Upload Recording</h3>
               <p className="text-sm text-muted-foreground">
-                Video Type: {recordedVideoBlob?.type || actualMimeTypeRef.current || "N/A"}, Size: {recordedVideoBlob ? (recordedVideoBlob.size / 1024 / 1024).toFixed(2) : "N/A"} MB, Duration: {recordingDuration}s.
+                Video Type: {actualBlobTypeForDisplay}, Size: {recordedVideoBlob ? (recordedVideoBlob.size / 1024 / 1024).toFixed(2) : "N/A"} MB, Timer Duration: {recordingDuration}s.
                  Note: The recorded video file itself is not rotated by the preview rotation.
               </p>
-              <p className="text-xs text-muted-foreground">If the video does not play correctly in other software like iMovie, it might be due to specific MP4 encoding details from the browser. Consider using a video converter if issues arise.</p>
+              <p className="text-xs text-muted-foreground">If the video does not play correctly in other software like iMovie, it might be due to specific {getFileExtensionFromMimeType(actualBlobTypeForDisplay).toUpperCase()} encoding details from the browser. Consider using a video converter if issues arise.</p>
 
 
               <div>
@@ -702,8 +743,9 @@ export default function VideoRecorderIOSPage() {
                     )
                     ))}
                 </div>
-                {selectedThumbnailIndex === null && potentialThumbnails.some(t=>t===null) && <p className="text-xs text-destructive mt-1">Thumbnails are generating or failed. Please wait or re-record if they don't appear.</p>}
-                {selectedThumbnailIndex === null && !potentialThumbnails.some(t=>t===null) && recordedVideoBlob && <p className="text-xs text-destructive mt-1">Please select a thumbnail.</p>}
+                {selectedThumbnailIndex === null && potentialThumbnails.some(t=>t===null) && recordedVideoBlob && <p className="text-xs text-destructive mt-1">Thumbnails are generating or failed. Please wait or re-record if they don't appear.</p>}
+                {selectedThumbnailIndex === null && !potentialThumbnails.every(t=>t===null) && recordedVideoBlob && <p className="text-xs text-destructive mt-1">Please select a thumbnail.</p>}
+                {potentialThumbnails.every(t=>t===null) && recordedVideoBlob && !isRecording && <p className="text-xs text-muted-foreground mt-1">Attempting to generate thumbnails... If they don't appear, the recorded video might be too short or problematic.</p>}
               </div>
 
 
@@ -744,7 +786,7 @@ export default function VideoRecorderIOSPage() {
                   onClick={saveVideoLocally}
                   variant="outline"
                   className="flex-1 gap-2"
-                  disabled={!recordedVideoBlob} // Disable if no blob
+                  disabled={!recordedVideoBlob} 
                 >
                   <Download size={18} /> Save to Device
                 </Button>
@@ -780,3 +822,4 @@ export default function VideoRecorderIOSPage() {
     </div>
   );
 }
+
