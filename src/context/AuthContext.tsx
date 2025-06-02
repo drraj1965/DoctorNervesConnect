@@ -40,16 +40,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         const doctorDocRef = doc(db, "doctors", firebaseUser.uid);
         const doctorDocSnap = await getDoc(doctorDocRef);
         if (doctorDocSnap.exists()) {
-          setIsAdmin(true);
-          setDoctorProfile({ ...userProfileData, ...doctorDocSnap.data() } as DoctorProfile);
-          // If a 'role' field exists in either document, prioritize doctor role
+          const doctorData = doctorDocSnap.data();
+          console.log("AuthContext: Doctor document data for UID", firebaseUser.uid, ":", JSON.stringify(doctorData));
+          // Client-side isAdmin for UI convenience. Firestore rules are the source of truth for permissions.
+          setIsAdmin(true); 
+          setDoctorProfile({ ...userProfileData, ...doctorData } as DoctorProfile);
           userProfileData.role = 'doctor';
         } else {
+          console.log("AuthContext: No doctor document found for UID", firebaseUser.uid);
           setIsAdmin(false);
           setDoctorProfile(null);
-          if (!userProfileData.role) userProfileData.role = 'patient'; // default if not doctor
+          if (!userProfileData.role) userProfileData.role = 'patient'; 
         }
-        setUser(userProfileData); // Update user with role
+        setUser(userProfileData); 
       } else {
         setUser(null);
         setIsAdmin(false);
@@ -82,3 +85,4 @@ export const useAuth = (): AuthContextType => {
   }
   return context;
 };
+
