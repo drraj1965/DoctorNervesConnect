@@ -8,13 +8,13 @@ import { SidebarProvider, Sidebar, SidebarInset, SidebarContent, SidebarMenu, Si
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import Link from 'next/link';
-import { LayoutDashboard, Video, FileText, MessageSquare, Activity, LogOut, UserCircle, ShieldCheck, Loader2, Settings, Sun, Moon, Users, VideoIcon, UploadCloud } from 'lucide-react';
+import { LayoutDashboard, Video, FileText, MessageSquare, Activity, LogOut, UserCircle, ShieldCheck, Loader2, Settings, Sun, Moon, Users, VideoIcon, UploadCloud, Smartphone } from 'lucide-react';
 
 const AppLogo = () => (
   <Link href="/dashboard" className="flex items-center gap-2 font-semibold text-lg text-primary">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7">
       <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
-      <path d="M12 12.5c.83 0 1.5-.67 1.5-1.5V8c0-.83-.67-1.5-1.5-1.5S10.5 7.17 10.5 8v3c0 .83.67 1.5 1.5 1.5zm4.5-1.5L15 9.5v-2c0-.28.22-.5.5-.5s.5.22.5.5V8h.5c.28 0 .5.22.5.5v1.5L18 9.5c.21.21.21.54 0 .75l-1.5 1.5V14c0 .28-.22-.5-.5-.5s-.5-.22-.5-.5v-.5h-.5c-.28 0-.5-.22-.5-.5V11.5l-1.5-1.5c-.21-.21-.21-.54 0-.75zm-9 0l1.5-1.5V8c0-.28-.22-.5-.5-.5S7 7.72 7 8v-.5H6.5c-.28 0-.5.22-.5.5V9.5L4.5 11c-.21.21-.21-.54 0 .75l1.5 1.5V14c0 .28.22.5.5.5s.5-.22.5.5v.5h.5c.28 0 .5-.22.5.5v-1.5l1.5-1.5c.21-.21-.21-.54 0-.75z"/>
+      <path d="M12 12.5c.83 0 1.5-.67 1.5-1.5V8c0-.83-.67-1.5-1.5-1.5S10.5 7.17 10.5 8v3c0 .83.67 1.5 1.5 1.5zm4.5-1.5L15 9.5v-2c0-.28.22-.5.5-.5s.5.22.5.5V8h.5c.28 0 .5.22.5.5v1.5L18 9.5c.21.21.21.54 0 .75l-1.5 1.5V14c0 .28-.22-.5-.5-.5s-.5-.22-.5-.5v-.5h-.5c-.28 0-.5-.22-.5-.5V11.5l-1.5-1.5c-.21-.21-.21-.54 0-.75zm-9 0l1.5-1.5V8c0-.28-.22-.5-.5-.5S7 7.72 7 8v-.5H6.5c-.28 0-.5.22-.5.5V9.5L4.5 11c-.21.21-.21-.54 0 .75l1.5 1.5V14c0 .28.22-.5.5.5s.5-.22.5.5v.5h.5c.28 0 .5-.22.5.5v-1.5l1.5-1.5c.21-.21-.21-.54 0-.75z"/>
     </svg>
     DoctorNerves Connect
   </Link>
@@ -62,6 +62,7 @@ const MainSidebarContent = () => {
 
   const adminLinks = [
     { href: "/admin/recorder", label: "Record Video", icon: UploadCloud },
+    { href: "/admin/video-recorder-ios", label: "iOS Video Recorder", icon: Smartphone },
     // { href: "/admin/article/new", label: "Write Article", icon: FileText },
     // { href: "/admin/questions", label: "Answer Questions", icon: MessageSquare },
     // { href: "/admin/users", label: "Manage Users", icon: Users },
@@ -162,3 +163,4 @@ export default function AppLayoutClient({ children }: { children: ReactNode }) {
   );
 }
 
+    
