@@ -15,11 +15,9 @@ const PLACEHOLDER_IMAGE_URL = "https://placehold.co/600x400.png";
 const getSafeImageUrl = (url?: string | null): string => {
   if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
     try {
-      // Attempt to parse to ensure it's a structurally valid URL
       new URL(url);
       return url;
     } catch (e) {
-      // If parsing fails, it's not a valid URL
       return PLACEHOLDER_IMAGE_URL;
     }
   }
@@ -96,18 +94,13 @@ export default function VideosPage() {
                 <Image 
                   src={getSafeImageUrl(video.thumbnailUrl)} 
                   alt={video.title} 
-                  layout="fill" 
-                  objectFit="cover"
-                  className="group-hover:scale-105 transition-transform duration-300"
+                  fill
+                  sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                  className="object-cover group-hover:scale-105 transition-transform duration-300"
                   data-ai-hint="medical video thumbnail"
                   onError={(e) => {
-                    // In case of an error even with a https URL (e.g. 404, network issue)
-                    // target an HTMLImageElement. We are using next/image which does not directly expose this.
-                    // We can set a state or re-render with placeholder if needed, but next/image handles some errors internally or via `blurDataURL`.
-                    // For simplicity, if getSafeImageUrl already returned placeholder, this won't run for that.
-                    // If it was a valid https that failed, this could log or try to set a component-level placeholder.
                     console.warn(`Error loading image: ${video.thumbnailUrl}`);
-                    (e.target as HTMLImageElement).src = PLACEHOLDER_IMAGE_URL; // Fallback for direct img, less effective for next/image
+                    (e.target as HTMLImageElement).src = PLACEHOLDER_IMAGE_URL; 
                   }}
                 />
                 <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
@@ -130,8 +123,6 @@ export default function VideosPage() {
               </Link>
               <div className="flex items-center space-x-3 text-muted-foreground">
                 <span className="flex items-center text-xs"><Eye size={14} className="mr-1"/> {video.viewCount || 0}</span>
-                {/* <Button variant="ghost" size="icon" className="w-7 h-7"><Share2 size={16} /></Button>
-                <Button variant="ghost" size="icon" className="w-7 h-7"><MessageSquare size={16} /></Button> */}
               </div>
             </CardFooter>
           </Card>
@@ -140,3 +131,4 @@ export default function VideosPage() {
     </div>
   );
 }
+

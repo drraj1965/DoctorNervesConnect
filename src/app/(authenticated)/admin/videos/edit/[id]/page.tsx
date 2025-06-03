@@ -8,27 +8,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox'; // Added Checkbox
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import Link from "next/link";
 import Image from 'next/image';
 import { ArrowLeft, UploadCloud, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
-import { getVideoById, updateVideoMetadata } from "@/lib/firebase/firestore"; // updateVideoMetadata needs to be created/adapted
+import { getVideoById, updateVideoMetadata as updateVideoMetadataFirestore } from "@/lib/firebase/firestore"; 
 import type { VideoMeta } from "@/types";
 import { useToast } from '@/hooks/use-toast';
-import { updateVideoThumbnailAction } from './actions'; // Server action for thumbnail
-
-// Placeholder for updateVideoMetadata (general metadata like title, desc)
-async function updateVideoDetailsAction(videoId: string, data: Partial<Pick<VideoMeta, 'title' | 'description' | 'tags' | 'featured'>>) {
-    // This is a simplified placeholder. In a real app, you'd have a robust server action.
-    try {
-        await updateVideoMetadata(videoId, data); // Assuming updateVideoMetadata exists and works
-        return { success: true };
-    } catch (error) {
-        return { success: false, error: error instanceof Error ? error.message : "Unknown error updating details." };
-    }
-}
-
+import { updateVideoThumbnailAction } from './actions'; 
+import { updateDoc, doc } from "firebase/firestore";
+import { db } from "@/lib/firebase/config"; 
+import { revalidatePath } from 'next/cache'; // This will cause an error in client component, remove if not inside server action
 
 export default function EditVideoPage({ params }: { params: { id: string } }) {
   const videoId = params.id;
@@ -39,7 +31,6 @@ export default function EditVideoPage({ params }: { params: { id: string } }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // Form states
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState('');
@@ -101,9 +92,9 @@ export default function EditVideoPage({ params }: { params: { id: string } }) {
       const result = await updateVideoThumbnailAction(videoId, newThumbnailFile, video.thumbnailStoragePath);
       if (result.success && result.newThumbnailUrl) {
         toast({ title: "Thumbnail Updated", description: "The video thumbnail has been successfully updated." });
-        setVideo(prev => prev ? { ...prev, thumbnailUrl: result.newThumbnailUrl! } : null);
-        setThumbnailPreview(result.newThumbnailUrl); // Update preview with the actual new URL
-        setNewThumbnailFile(null); // Reset file input
+        setVideo(prev => prev ? { ...prev, thumbnailUrl: result.newThumbnailUrl!, thumbnailStoragePath: result.newThumbnailStoragePath || prev.thumbnailStoragePath } : null);
+        setThumbnailPreview(result.newThumbnailUrl); 
+        setNewThumbnailFile(null); 
       } else {
         throw new Error(result.error || "Failed to update thumbnail.");
       }
@@ -128,15 +119,13 @@ export default function EditVideoPage({ params }: { params: { id: string } }) {
             tags: tags.split(',').map(t => t.trim()).filter(Boolean),
             featured
         };
-        // In a real app, this would be a server action:
-        // const result = await updateVideoDetailsAction(videoId, updatedData);
-        // For now, simulate calling Firestore directly (not ideal from client but matches existing pattern for getVideoById)
-        await updateDoc(doc(db, "videos", videoId), updatedData); 
-        revalidatePath(`/videos/${videoId}`);
-        revalidatePath(`/admin/videos/edit/${videoId}`);
+      
+        await updateVideoMetadataFirestore(videoId, updatedData); 
 
         toast({ title: "Video Details Updated", description: "The video metadata has been saved." });
         setVideo(prev => prev ? { ...prev, ...updatedData, tags: updatedData.tags } : null);
+        // Revalidation should happen in server action or via API route for proper effect
+        // router.refresh(); // Simple client-side refresh for now
     } catch (err) {
         console.error("Failed to update video details:", err);
         setError(err instanceof Error ? err.message : "An unknown error occurred while saving details.");
@@ -194,7 +183,7 @@ export default function EditVideoPage({ params }: { params: { id: string } }) {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-8">
-          {error && (
+          {error && ( // Display general errors from page state
             <Alert variant="destructive" className="mb-4">
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Error</AlertTitle>
@@ -215,7 +204,7 @@ export default function EditVideoPage({ params }: { params: { id: string } }) {
               <Input id="tags" value={tags} onChange={(e) => setTags(e.target.value)} />
             </div>
             <div className="flex items-center space-x-2 pt-2">
-                <Checkbox id="featured" checked={featured} onCheckedChange={(checked) => setFeatured(!!checked)} />
+                <Checkbox id="featured" checked={featured} onCheckedChange={(checkedStatus) => setFeatured(Boolean(checkedStatus))} />
                 <Label htmlFor="featured" className="font-normal text-sm">Feature this video on Homepage</Label>
             </div>
              <Button type="submit" disabled={isUpdatingDetails} className="w-full sm:w-auto">
@@ -259,6 +248,4 @@ export default function EditVideoPage({ params }: { params: { id: string } }) {
   );
 }
 
-// Helper function for direct Firestore update (consider moving to a shared lib or actions file if reused)
-import { updateDoc, doc } from "firebase/firestore";
-import { db } from "@/lib/firebase/config"; // Assuming db is exported from your firebase config
+// No need for the duplicate import of updateDoc and db here as it's handled by updateVideoMetadataFirestore from lib
