@@ -32,7 +32,7 @@ export default function UploadLocalVideoPage() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
-  const [videoDuration, setVideoDuration] = useState(0); 
+  const [videoDuration, setVideoDuration] = useState(0); // Store raw duration (seconds)
   const [videoDimensions, setVideoDimensions] = useState<{width: number, height: number} | null>(null);
 
 
@@ -60,7 +60,10 @@ export default function UploadLocalVideoPage() {
     }
   }, [authLoading, isAdmin, router]);
 
-  const formatTime = (totalSeconds: number): string => {
+  const formatDisplayTime = (totalSeconds: number): string => {
+    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+        return "N/A"; // Display N/A if duration is invalid or zero
+    }
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = Math.floor(totalSeconds % 60);
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
@@ -73,7 +76,7 @@ export default function UploadLocalVideoPage() {
       URL.revokeObjectURL(videoPreviewUrl);
     }
     setVideoPreviewUrl(null);
-    setVideoDuration(0);
+    setVideoDuration(0); // Reset raw duration
     setVideoDimensions(null);
     potentialThumbnails.forEach((url, index) => { 
       if (url) {
@@ -146,7 +149,7 @@ export default function UploadLocalVideoPage() {
       try {
         objectUrl = URL.createObjectURL(file);
         console.log("UploadPage: Created object URL for new file:", objectUrl);
-        setVideoPreviewUrl(objectUrl); // This will trigger the onLoadedMetadata of videoPreviewRef
+        setVideoPreviewUrl(objectUrl);
       } catch (urlError) {
         console.error("UploadPage: Error creating object URL:", urlError);
         setError("Could not create a preview for the selected file.");
@@ -173,15 +176,15 @@ export default function UploadLocalVideoPage() {
       console.log(`UploadPage: Main video preview metadata loaded. Reported duration: ${duration}s. Dimensions: ${width}x${height}`);
       
       if (duration > 0 && Number.isFinite(duration)) {
-        setVideoDuration(duration);
+        setVideoDuration(duration); // Store raw duration
         setVideoDimensions({width, height});
         setUploadStep("previewReady");
       } else {
-        console.warn("UploadPage: Video duration is invalid or not available from main preview. Will use fallback for thumbnails if possible.", duration);
-        setError("Could not determine video duration accurately. Thumbnail generation might be affected or fail. You can still try to generate thumbnails.");
-        setVideoDuration(0.1); // Small fallback for trying
+        console.warn("UploadPage: Video duration is invalid or not available from main preview. Reported:", duration);
+        setError("Could not determine video duration accurately. It will be marked as N/A. Thumbnail generation might be affected or fail.");
+        setVideoDuration(0); // Set to 0 if invalid
         setVideoDimensions({width: width || 0, height: height || 0 });
-        setUploadStep("previewReady"); // Allow user to try generating thumbnails anyway
+        setUploadStep("previewReady"); 
       }
     } else {
       console.warn("UploadPage: handleVideoMetadataLoaded called but videoPreviewRef or videoPreviewUrl is missing.");
@@ -196,11 +199,11 @@ export default function UploadLocalVideoPage() {
     console.error("UploadPage: Main video preview - videoElement.error object:", videoError);
     setError(`Error loading video preview: ${videoError?.message || 'Unknown media error'}. The file might be corrupted or in an unsupported format.`);
     setIsFileProcessing(false);
-    setUploadStep("fileSelected"); // Revert to a state where they might retry or see the error
+    setUploadStep("fileSelected"); 
   };
 
   const handleGenerateThumbnailsClick = () => {
-    if (videoPreviewUrl && videoDuration) {
+    if (videoPreviewUrl && (videoDuration > 0 || videoDuration === 0)) { // Allow 0 for attempt if duration was invalid
       generateThumbnailsFromVideoFile(videoPreviewUrl, videoDuration);
     } else {
       setError("Cannot generate thumbnails. Video preview or duration is not available.");
@@ -309,6 +312,7 @@ export default function UploadLocalVideoPage() {
       return;
     }
     
+    // Use duration (which is now 0 if invalid, or actual seconds if valid)
     const effectiveDurationForThumbnails = (duration > 0.01 && Number.isFinite(duration)) ? duration : 0.1; 
     console.log(`UploadPage: Generating thumbnails. Effective duration: ${effectiveDurationForThumbnails}s from URL: ${currentVideoObjectUrl.substring(0,30)}...`);
     setIsGeneratingThumbnails(true);
@@ -440,7 +444,7 @@ export default function UploadLocalVideoPage() {
       setUploadProgress(100);
 
       const videoId = uuidv4();
-      const videoData: VideoMeta = {
+      const videoData: Partial<VideoMeta> & Pick<VideoMeta, 'id' | 'title' | 'doctorId' | 'doctorName' | 'videoUrl' | 'thumbnailUrl' | 'tags' | 'createdAt' | 'featured' | 'permalink' | 'storagePath' | 'thumbnailStoragePath' | 'videoType'> = {
         id: videoId,
         title,
         description,
@@ -448,24 +452,27 @@ export default function UploadLocalVideoPage() {
         doctorName: doctorProfile.displayName || doctorProfile.email || 'Unknown Doctor',
         videoUrl: uploadedVideoUrl,
         thumbnailUrl: uploadedThumbnailUrl,
-        duration: formatTime(videoDuration), 
-        recordingDuration: Math.round(videoDuration), 
+        duration: formatDisplayTime(videoDuration), // Use formatted time, N/A if invalid
         tags: keywords.split(',').map(k => k.trim()).filter(Boolean),
         createdAt: new Date().toISOString(), 
-        viewCount: 0,
-        likeCount: 0, 
-        commentCount: 0,
         featured,
         permalink: `/videos/${videoId}`,
         storagePath: videoStoragePath,
         thumbnailStoragePath: thumbnailStoragePath,
-        videoSize: videoFile.size,
         videoType: videoFile.type,
-        comments: [],
       };
       
+      // Only include recordingDuration if videoDuration is valid and positive
+      if (videoDuration > 0 && Number.isFinite(videoDuration)) {
+        videoData.recordingDuration = Math.round(videoDuration);
+      }
+      // Only include videoSize if available
+      if (videoFile.size > 0) {
+        videoData.videoSize = videoFile.size;
+      }
+      
       console.log("UploadPage: Calling saveUploadedVideoMetadataAction with data:", JSON.stringify(videoData, null, 2));
-      const result = await saveUploadedVideoMetadataAction(videoData);
+      const result = await saveUploadedVideoMetadataAction(videoData as Omit<VideoMeta, 'createdAt'>); // Cast as action expects slightly different input now
 
       if (result.success) {
         const successMsg = `Video "${title}" uploaded and metadata saved!`;
@@ -478,7 +485,7 @@ export default function UploadLocalVideoPage() {
     } catch (err) {
       console.error("UploadPage: Upload failed:", err);
       setError(err instanceof Error ? err.message : "An unknown error occurred during upload.");
-      setUploadStep("fileSelected"); // Or some other error state
+      setUploadStep("fileSelected"); 
     } finally {
       setIsUploading(false);
       console.log("UploadPage: Upload process finished.");
@@ -572,17 +579,22 @@ export default function UploadLocalVideoPage() {
                 >
                     <RotateCw size={18} />
                 </Button>
-                {videoDuration > 0 && Number.isFinite(videoDuration) && (
+                {(videoDuration > 0 && Number.isFinite(videoDuration)) && (
                     <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 rounded text-xs">
-                        Duration: {formatTime(videoDuration)} {videoDimensions && `(${videoDimensions.width}x${videoDimensions.height})`}
+                        Duration: {formatDisplayTime(videoDuration)} {videoDimensions && `(${videoDimensions.width}x${videoDimensions.height})`}
                     </div>
                 )}
+                 {(videoDuration === 0 && uploadStep !== "fileSelected") && ( // Show N/A if duration is 0 and not in initial processing
+                    <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 rounded text-xs">
+                        Duration: N/A {videoDimensions && `(${videoDimensions.width}x${videoDimensions.height})`}
+                    </div>
+                 )}
               </div>
               
               {uploadStep === "previewReady" && (
                 <Button 
                     onClick={handleGenerateThumbnailsClick} 
-                    disabled={isGeneratingThumbnails || !(videoDuration > 0)}
+                    disabled={isGeneratingThumbnails} // Allow generation even if duration is 0 (will use fallback times)
                     className="w-full sm:w-auto gap-2 bg-accent hover:bg-accent/90 text-accent-foreground"
                 >
                     <Sparkles size={18} /> Generate Thumbnails
