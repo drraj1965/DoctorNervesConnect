@@ -49,9 +49,9 @@ export async function saveUploadedVideoMetadataAction(videoData: Omit<VideoMeta,
   try {
     const videoDocRef = doc(db, "videos", videoId);
 
-    // Ensure all fields align with VideoMeta and Firestore rules
-    const finalData: VideoMeta = {
-      id: videoId, // Explicitly set, also part of videoData
+    // Construct the base data, ensuring all non-optional fields from VideoMeta are present
+    let finalData: Partial<VideoMeta> = { // Start with Partial to build it up
+      id: videoId,
       title: dataToSave.title,
       description: dataToSave.description,
       doctorId: dataToSave.doctorId,
@@ -59,9 +59,8 @@ export async function saveUploadedVideoMetadataAction(videoData: Omit<VideoMeta,
       videoUrl: dataToSave.videoUrl,
       thumbnailUrl: dataToSave.thumbnailUrl,
       duration: dataToSave.duration, // String like "01:23"
-      recordingDuration: dataToSave.recordingDuration, // Number of seconds
-      tags: dataToSave.tags || [], // Ensure it's an array
-      createdAt: serverTimestamp() as any, // Firestore will set this to a server-side timestamp
+      tags: dataToSave.tags || [],
+      createdAt: serverTimestamp() as any,
       viewCount: dataToSave.viewCount || 0,
       likeCount: dataToSave.likeCount || 0,
       commentCount: dataToSave.commentCount || 0,
@@ -69,14 +68,26 @@ export async function saveUploadedVideoMetadataAction(videoData: Omit<VideoMeta,
       permalink: dataToSave.permalink || `/videos/${videoId}`,
       storagePath: dataToSave.storagePath,
       thumbnailStoragePath: dataToSave.thumbnailStoragePath,
-      videoSize: dataToSave.videoSize || 0,
-      videoType: dataToSave.videoType || 'video/webm', // Default if not provided
-      comments: dataToSave.comments || [], // Ensure it's an array
+      comments: dataToSave.comments || [],
     };
+
+    // Handle optional numeric fields carefully:
+    // If value is provided and is a valid number, include it. Otherwise, omit.
+    if (typeof dataToSave.recordingDuration === 'number' && !isNaN(dataToSave.recordingDuration)) {
+      finalData.recordingDuration = dataToSave.recordingDuration;
+    }
+    if (typeof dataToSave.videoSize === 'number' && !isNaN(dataToSave.videoSize)) {
+      finalData.videoSize = dataToSave.videoSize;
+    }
     
+    // videoType has a default if not provided from client, matching VideoMeta expectations
+    finalData.videoType = dataToSave.videoType || 'video/webm';
+
+
     console.log("[UploadVideoAction:saveUploadedVideoMetadata] FINAL data object for Firestore setDoc:", JSON.stringify(finalData, null, 2));
 
-    await setDoc(videoDocRef, finalData);
+    // Cast to VideoMeta for the setDoc call, assuming all required fields are now met
+    await setDoc(videoDocRef, finalData as VideoMeta);
     console.log("[UploadVideoAction:saveUploadedVideoMetadata] Successfully set document in Firestore for videoId:", videoId);
 
     revalidatePath('/dashboard');
@@ -107,3 +118,5 @@ export async function saveUploadedVideoMetadataAction(videoData: Omit<VideoMeta,
     return { success: false, error: errorMessage };
   }
 }
+
+    
