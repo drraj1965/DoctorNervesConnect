@@ -23,7 +23,7 @@ type RecordingState = 'initial' | 'permission' | 'ready' | 'recording' | 'paused
 
 const MAX_RECORDING_TIME_MS = 30 * 60 * 1000;
 const NUM_THUMBNAILS_TO_GENERATE = 5;
-const RECORDING_TIMESLICE_MS = 1000;
+const RECORDING_TIMESLICE_MS = 1000; // How often ondataavailable is triggered
 
 export default function VideoRecorder() {
   const { user, doctorProfile, isAdmin } = useAuth();
@@ -54,10 +54,12 @@ export default function VideoRecorder() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isLocallySaved, setIsLocallySaved] = useState(false);
 
-  const timerSecondsRef = useRef(0);
+  const timerSecondsRef = useRef(0); // For actual duration tracking
+  const [displayTime, setDisplayTime] = useState(0); // For UI display
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const actualMimeTypeRef = useRef<string>('');
   const [previewRotation, setPreviewRotation] = useState(0);
+
 
   const isStreamValid = useCallback((stream: MediaStream | null): stream is MediaStream => {
     console.log("VideoRecorder (isStreamValid): Validating stream object:", stream);
@@ -82,65 +84,15 @@ export default function VideoRecorder() {
       videoPreviewRef.current.srcObject = null;
       videoPreviewRef.current.src = "";
     }
-    // Do not change recordingState here, let other functions manage it
   }, []);
-
-  const requestPermissionsAndSetup = useCallback(async () => {
-    console.log("VideoRecorder: Requesting media permissions...");
-    setError(null);
-    setRecordingState('permission');
-
-    if (isStreamValid(mediaStreamRef.current)) {
-        console.log("VideoRecorder: Stream already valid in requestPermissionsAndSetup, possibly redundant call. Setting state to ready.");
-        setRecordingState('ready');
-        if (videoPreviewRef.current && videoPreviewRef.current.srcObject !== mediaStreamRef.current) {
-             videoPreviewRef.current.srcObject = mediaStreamRef.current;
-             await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error playing existing stream in preview during setup:", e));
-        }
-        return;
-    }
-    
-    // Stop any existing stream before getting a new one
-    stopMediaStream(); 
-
-    try {
-      const constraints: MediaStreamConstraints = {
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'user' } },
-        audio: true
-      };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (!isStreamValid(stream)) {
-        stream?.getTracks().forEach(track => track.stop());
-        throw new Error("Camera stream acquired but is not active or valid.");
-      }
-      mediaStreamRef.current = stream;
-      if (videoPreviewRef.current) {
-        videoPreviewRef.current.srcObject = stream;
-        videoPreviewRef.current.muted = true;
-        videoPreviewRef.current.controls = false;
-        videoPreviewRef.current.setAttribute('playsinline', 'true');
-        videoPreviewRef.current.setAttribute('autoplay', 'true');
-        await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error playing live preview on setup:", e));
-      }
-      setRecordingState('ready');
-      setPreviewRotation(0);
-      console.log("VideoRecorder: Media permissions granted and stream set up successfully.");
-    } catch (err) {
-      console.error("VideoRecorder: Error accessing media devices:", err);
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Failed to access camera/microphone: ${errorMessage}. Please ensure permissions are allowed in your browser settings.`);
-      setRecordingState('initial'); // Back to initial if permissions fail, to show setup button again
-    }
-  }, [stopMediaStream, isStreamValid]);
-
-
+  
   useEffect(() => {
+    console.log("VideoRecorder: Main useEffect for auth/unmount cleanup. isAdmin:", isAdmin, "User:", !!user);
     if (!isAdmin && user) {
       router.replace('/dashboard');
     }
-    // This effect now primarily handles cleanup on unmount or auth changes
     return () => {
-      console.log("VideoRecorder: Component unmounting or user/admin status changed -> stopping media stream.");
+      console.log("VideoRecorder: Main useEffect cleanup (unmount or core dep change) -> stopping media stream.");
       stopMediaStream();
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);
@@ -173,10 +125,58 @@ export default function VideoRecorder() {
     };
   }, [potentialThumbnails]);
 
+  const requestPermissionsAndSetup = useCallback(async () => {
+    console.log("VideoRecorder: Requesting media permissions...");
+    setError(null);
+    setRecordingState('permission');
+
+    if (isStreamValid(mediaStreamRef.current)) {
+        console.log("VideoRecorder: Stream already valid in requestPermissionsAndSetup. Setting state to ready.");
+        setRecordingState('ready');
+        if (videoPreviewRef.current && videoPreviewRef.current.srcObject !== mediaStreamRef.current) {
+             videoPreviewRef.current.srcObject = mediaStreamRef.current;
+             await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error playing existing stream in preview during setup:", e));
+        }
+        return;
+    }
+    
+    stopMediaStream(); 
+
+    try {
+      const constraints: MediaStreamConstraints = {
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'user' } },
+        audio: true
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (!isStreamValid(stream)) {
+        stream?.getTracks().forEach(track => track.stop());
+        throw new Error("Camera stream acquired but is not active or valid.");
+      }
+      mediaStreamRef.current = stream;
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream;
+        videoPreviewRef.current.src = ""; // Clear any blob src
+        videoPreviewRef.current.muted = true;
+        videoPreviewRef.current.controls = false;
+        videoPreviewRef.current.setAttribute('playsinline', 'true');
+        videoPreviewRef.current.setAttribute('autoplay', 'true');
+        await videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error playing live preview on setup:", e));
+      }
+      setRecordingState('ready');
+      setPreviewRotation(0);
+      console.log("VideoRecorder: Media permissions granted and stream set up successfully.");
+    } catch (err) {
+      console.error("VideoRecorder: Error accessing media devices:", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError(`Failed to access camera/microphone: ${errorMessage}. Please ensure permissions are allowed in your browser settings.`);
+      setRecordingState('initial'); 
+    }
+  }, [stopMediaStream, isStreamValid]);
+
 
   const formatTime = (totalSeconds: number): string => {
     const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60; // Use Math.floor for seconds as well
+    const seconds = totalSeconds % 60;
     return `${String(minutes).padStart(2, '0')}:${String(Math.floor(seconds)).padStart(2, '0')}`;
   };
 
@@ -205,18 +205,20 @@ export default function VideoRecorder() {
 
     recordedChunksRef.current = [];
     setRecordedVideoBlob(null);
+    if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl); // Clean up previous if any
     setRecordedVideoUrl(null);
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setSelectedThumbnailIndex(null);
     timerSecondsRef.current = 0;
+    setDisplayTime(0); // Reset timer display
     actualMimeTypeRef.current = '';
 
     if (videoPreviewRef.current) {
-      if (videoPreviewRef.current.srcObject !== streamToUse || videoPreviewRef.current.paused) {
+      if (videoPreviewRef.current.srcObject !== streamToUse || videoPreviewRef.current.paused || videoPreviewRef.current.ended || videoPreviewRef.current.src) {
         console.log("VideoRecorder: Setting/Resetting preview to live stream for recording.");
         videoPreviewRef.current.srcObject = streamToUse;
-        videoPreviewRef.current.src = "";
+        videoPreviewRef.current.src = ""; // Ensure no blob src is lingering
         videoPreviewRef.current.controls = false;
         videoPreviewRef.current.muted = true;
         videoPreviewRef.current.setAttribute('playsinline', 'true');
@@ -246,11 +248,17 @@ export default function VideoRecorder() {
       if (mediaRecorderRef.current) actualMimeTypeRef.current = mediaRecorderRef.current.mimeType || chosenMimeType || '';
       console.log(`VideoRecorder: MediaRecorder.onstart. Actual MIME: ${actualMimeTypeRef.current}. State: ${mediaRecorderRef.current?.state}`);
       setRecordingState('recording');
+      // Timer setup
       timerSecondsRef.current = 0;
+      setDisplayTime(0);
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = setInterval(() => {
         timerSecondsRef.current++;
-        if (timerSecondsRef.current * 1000 >= MAX_RECORDING_TIME_MS) { stopRecording(); setError("Max recording time reached."); }
+        setDisplayTime(prev => prev + 1);
+        if (timerSecondsRef.current * 1000 >= MAX_RECORDING_TIME_MS) { 
+          stopRecording(); 
+          setError("Max recording time reached."); 
+        }
       }, 1000);
     };
 
@@ -261,8 +269,11 @@ export default function VideoRecorder() {
     mediaRecorderRef.current.onstop = async () => {
       const finalRecordedDuration = timerSecondsRef.current;
       console.log(`VideoRecorder: MediaRecorder.onstop. Chunks: ${recordedChunksRef.current.length}. Timer Duration: ${finalRecordedDuration}s`);
-      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-      recordingTimerRef.current = null;
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      setRecordingState('stopped'); // Set state before async ops like thumbnail gen
 
       const currentMimeType = actualMimeTypeRef.current || mediaRecorderRef.current?.mimeType || 'video/webm';
       const blob = new Blob(recordedChunksRef.current, { type: currentMimeType });
@@ -270,7 +281,7 @@ export default function VideoRecorder() {
 
       if (blob.size === 0) {
         setError("Recorded video is empty. Please try recording again.");
-        setRecordingState('ready'); // Back to ready if stream is still good
+        setRecordingState('ready');
         return;
       }
       setRecordedVideoBlob(blob);
@@ -284,10 +295,13 @@ export default function VideoRecorder() {
         videoPreviewRef.current.muted = false;
         videoPreviewRef.current.controls = true;
         videoPreviewRef.current.load(); 
-
+        
         videoPreviewRef.current.onloadedmetadata = () => {
           console.log(`VideoRecorder: Preview metadata loaded. Element duration: ${videoPreviewRef.current?.duration}s, Timer duration: ${finalRecordedDuration}s.`);
-          videoPreviewRef.current?.play().catch(e => console.warn("Error playing recorded preview:", e));
+          videoPreviewRef.current?.play().catch(e => {
+            console.warn("Error playing recorded preview in onloadedmetadata:", e);
+            setError(`Preview Error: Could not play recorded video. (${e.name})`);
+          });
         };
         videoPreviewRef.current.onerror = (e) => {
           const videoError = videoPreviewRef.current?.error;
@@ -302,17 +316,24 @@ export default function VideoRecorder() {
       } else {
         console.warn("VideoRecorder: onstop - Recorded duration is 0s. Skipping thumbnail generation.");
         setError("Recording was too short to generate thumbnails. Please record for at least a few seconds.");
+        setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
+        setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
       }
-      setRecordingState('stopped');
     };
 
     mediaRecorderRef.current.onerror = (event: Event) => {
       console.error("VideoRecorder: MediaRecorder.onerror:", event);
-      const mrError = event as any;
+      const mrError = event as any; // Cast to any to access potential error property
       let errorMsg = "Recording error occurred.";
-      if (mrError.error && mrError.error.message) errorMsg += ` Details: ${mrError.error.message}`;
+      if (mrError.error && mrError.error.message) {
+          errorMsg += ` Details: ${mrError.error.message}`;
+      } else if (mrError.error && mrError.error.name) {
+          errorMsg += ` Details: ${mrError.error.name}`;
+      } else if (mrError.type) {
+          errorMsg += ` Type: ${mrError.type}`;
+      }
       setError(errorMsg);
-      setRecordingState('ready'); // or 'initial' if stream might be bad
+      setRecordingState('ready');
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     };
 
@@ -328,13 +349,18 @@ export default function VideoRecorder() {
   };
 
   const stopRecording = () => {
+    console.log(`VideoRecorder: stopRecording() called. Current MediaRecorder state: ${mediaRecorderRef.current?.state}. Timer ref: ${timerSecondsRef.current}s.`);
     if (mediaRecorderRef.current && (mediaRecorderRef.current.state === 'recording' || mediaRecorderRef.current.state === 'paused')) {
-      mediaRecorderRef.current.stop();
-      console.log(`VideoRecorder: stopRecording() called. Recorder State: ${mediaRecorderRef.current.state}. Timer: ${timerSecondsRef.current}s.`);
+      mediaRecorderRef.current.stop(); // This will trigger 'onstop'
     } else {
-      console.warn(`VideoRecorder: stopRecording() called but recorder not in 'recording' or 'paused' state. State: ${mediaRecorderRef.current?.state}`);
-      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-      if (recordingState === 'recording') setRecordingState('stopped'); // Ensure state transition if somehow missed
+      console.warn(`VideoRecorder: stopRecording() called but recorder not in 'recording' or 'paused' state. State: ${mediaRecorderRef.current?.state}. Attempting to clear timer and set state.`);
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      if (recordingState === 'recording' || recordingState === 'paused') {
+         setRecordingState('stopped');
+      }
     }
   };
 
@@ -399,7 +425,7 @@ export default function VideoRecorder() {
           console.log(`VideoRecorder: Thumb[${index}] metadata. Duration: ${videoElement.duration}s. Dims: ${videoElement.videoWidth}x${videoElement.videoHeight}. Seeking to ${time}s.`);
           const seekTime = Math.max(0.01, Math.min(time, (videoElement.duration > 0 && Number.isFinite(videoElement.duration)) ? videoElement.duration - 0.01 : time));
           videoElement.currentTime = seekTime;
-          await new Promise(r => setTimeout(r, 200)); // Increased delay for some browsers
+          await new Promise(r => setTimeout(r, 200)); 
           if (videoElement.readyState >= 2 && !seekedFired) { 
             console.log(`VideoRecorder: Thumb[${index}] readyState >= 2 after seek attempt, capturing frame.`);
             captureFrame();
@@ -427,14 +453,22 @@ export default function VideoRecorder() {
   }, []);
 
   const generatePotentialThumbnails = useCallback(async (videoObjectUrl: string, duration: number) => {
-    if (!videoObjectUrl || !(duration > 0 && Number.isFinite(duration))) {
-      setError("Cannot generate thumbnails: video duration is invalid or URL missing.");
+    if (!videoObjectUrl) {
+      setError("Cannot generate thumbnails: video URL is missing.");
       setIsGeneratingThumbnails(false); return;
+    }
+    if (!(duration > 0 && Number.isFinite(duration))) {
+      console.warn("VideoRecorder: Thumbnail generation skipped, duration invalid:", duration);
+      setError("Cannot generate thumbnails: video duration is invalid or too short.");
+      setIsGeneratingThumbnails(false);
+      setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
+      setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
+      return;
     }
     console.log(`VideoRecorder: Generating thumbnails. Duration: ${duration}s`);
     setIsGeneratingThumbnails(true);
     
-    const oldThumbURLs = [...potentialThumbnailsRef_forCleanup.current]; // Use the ref for old URLs
+    const oldThumbURLs = [...potentialThumbnailsRef_forCleanup.current]; 
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null)); 
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
 
@@ -464,7 +498,7 @@ export default function VideoRecorder() {
       }
     });
     
-    oldThumbURLs.forEach(url => { if (url) URL.revokeObjectURL(url); }); // Clean up old URLs
+    oldThumbURLs.forEach(url => { if (url) URL.revokeObjectURL(url); });
 
     while (newUrls.length < NUM_THUMBNAILS_TO_GENERATE) newUrls.push(null);
     while (newBlobs.length < NUM_THUMBNAILS_TO_GENERATE) newBlobs.push(null);
@@ -512,42 +546,47 @@ export default function VideoRecorder() {
     console.log("VideoRecorder: resetRecorderState called. backToInitial:", backToInitial);
     setTitle(''); setDescription(''); setKeywords(''); setFeatured(false);
     setRecordedVideoBlob(null);
+    if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
     setRecordedVideoUrl(null); 
+    potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url);});
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null)); 
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setSelectedThumbnailIndex(null);
     timerSecondsRef.current = 0;
+    setDisplayTime(0); // Reset display timer
     actualMimeTypeRef.current = '';
     recordedChunksRef.current = [];
     setIsLocallySaved(false);
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try { mediaRecorderRef.current.stop(); } catch (e) { console.warn("Error stopping mediarecorder during reset:", e) }
     }
     mediaRecorderRef.current = null;
+    
+    if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+    }
     
     setError(null);
     setSuccessMessage(null);
     setPreviewRotation(0);
 
     if (backToInitial) {
-      stopMediaStream(); // Fully stop and release camera
+      stopMediaStream();
       setRecordingState('initial');
     } else {
-      // If not going back to initial, assume stream might still be desired (e.g., record again)
-      // Ensure preview is set for live stream if available
       if (isStreamValid(mediaStreamRef.current) && videoPreviewRef.current) {
         videoPreviewRef.current.srcObject = mediaStreamRef.current;
         videoPreviewRef.current.src = "";
         videoPreviewRef.current.controls = false;
         videoPreviewRef.current.muted = true;
         videoPreviewRef.current.play().catch(e => console.warn("Error re-playing live stream after soft reset:", e));
+        setRecordingState('ready');
       } else {
-        // If stream isn't valid, go to initial to allow re-setup
         stopMediaStream();
         setRecordingState('initial');
       }
-      if (!isStreamValid(mediaStreamRef.current)) setRecordingState('initial');
-      else setRecordingState('ready');
     }
   };
 
@@ -596,25 +635,26 @@ export default function VideoRecorder() {
         recordingDuration: timerSecondsRef.current,   
         tags: keywords.split(',').map(k => k.trim()).filter(Boolean),
         viewCount: 0, likeCount: 0, commentCount: 0, featured,
+        permalink: `/videos/${videoId}`, // Added permalink
         storagePath: videoStoragePath, thumbnailStoragePath,
         videoSize: recordedVideoBlob.size,
         videoType: recordedVideoBlob.type || actualMimeTypeRef.current,
-        comments: [],
+        comments: [], // Ensure comments array is initialized
       };
 
-      const result = await addVideoMetadataToFirestore(videoDataForAction as VideoMeta); // Cast to VideoMeta
+      const result = await addVideoMetadataToFirestore(videoDataForAction as VideoMeta);
       if (result.success) {
         setSuccessMessage("Video uploaded successfully and metadata saved!");
         setRecordingState('success');
       } else {
         console.error("[VideoRecorder:handleUpload] Error from addVideoMetadataToFirestore:", result.error);
         setError(`Failed to save video metadata: ${result.error}`);
-        setRecordingState('error'); // Keep error state for review form
+        setRecordingState('error'); 
       }
     } catch (err) {
       console.error("[VideoRecorder:handleUpload] Overall upload error:", err);
       setError(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
-      setRecordingState('error'); // Keep error state for review form
+      setRecordingState('error'); 
     }
   };
 
@@ -664,9 +704,9 @@ export default function VideoRecorder() {
               className="w-full h-full object-contain bg-black transition-transform duration-300 ease-in-out"
               style={{ transform: `rotate(${previewRotation}deg)` }}
               playsInline
-              muted={!recordedVideoUrl || recordingState !== 'stopped'} // Mute live preview, unmute recorded
-              autoPlay={recordingState !== 'stopped'} // Autoplay live preview
-              controls={!!recordedVideoUrl && recordingState === 'stopped'}
+              muted={!recordedVideoUrl} 
+              autoPlay={!recordedVideoUrl}
+              controls={!!recordedVideoUrl} 
               key={recordedVideoUrl || (mediaStreamRef.current?.id) || 'live_preview_main_recorder'}
             />
             {(mediaStreamRef.current || recordedVideoUrl) && (
@@ -676,7 +716,7 @@ export default function VideoRecorder() {
             )}
             {showRecordingInProgress && (
               <div className="absolute top-4 right-4 bg-red-600 text-white px-3 py-1.5 rounded-lg text-sm font-mono shadow-lg flex items-center gap-2">
-                <Mic size={18} className="animate-pulse" /> REC {formatTime(timerSecondsRef.current)}
+                <Mic size={18} className="animate-pulse" /> REC {formatTime(displayTime)}
               </div>
             )}
             {showReviewAndUpload && recordedVideoUrl && (
@@ -751,7 +791,7 @@ export default function VideoRecorder() {
                           className={`relative aspect-video rounded-lg overflow-hidden border-4 transition-all duration-200 ease-in-out hover:opacity-70 focus:outline-none
                             ${selectedThumbnailIndex === index ? 'border-primary ring-4 ring-primary/50 ring-offset-2 ring-offset-background' : 'border-slate-300 dark:border-slate-600'}`}
                         >
-                          <NextImage src={thumbUrl} alt={`Thumbnail ${index + 1}`} fill sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, 20vw" className="object-cover transition-transform group-hover:scale-105" data-ai-hint="video thumbnail selection" />
+                          <NextImage src={thumbUrl} alt={`Thumbnail ${index + 1}`} fill sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, 20vw" className="object-cover transition-transform group-hover:scale-105" data-ai-hint="video thumbnail selection"/>
                           {selectedThumbnailIndex === index && (
                             <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
                               <CheckCircle size={40} className="text-white opacity-90" />
