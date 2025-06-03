@@ -13,7 +13,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { useAuth } from '@/context/AuthContext';
 import { uploadFileToStorage, getFirebaseStorageDownloadUrl } from '@/lib/firebase/storage';
 import { saveUploadedVideoMetadataAction } from './actions';
-import { UploadCloud, AlertCircle, CheckCircle, Loader2, Film, Image as ImageIcon, RefreshCcw, RotateCw } from 'lucide-react';
+import { UploadCloud, AlertCircle, CheckCircle, Loader2, Film, Image as ImageIcon, RefreshCcw, RotateCw, Sparkles, PlaySquare } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -21,20 +21,26 @@ import type { VideoMeta } from '@/types';
 
 const NUM_THUMBNAILS_TO_GENERATE = 5;
 
+type UploadStep = "initial" | "fileSelected" | "previewReady" | "thumbnailsGenerating" | "thumbnailsReady" | "uploading" | "success";
+
 export default function UploadLocalVideoPage() {
   const { user, doctorProfile, isAdmin, loading: authLoading } = useAuth();
   const router = useRouter();
 
+  const [uploadStep, setUploadStep] = useState<UploadStep>("initial");
+
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
-  const [videoDuration, setVideoDuration] = useState(0); // Raw duration in seconds
+  const [videoDuration, setVideoDuration] = useState(0); 
+  const [videoDimensions, setVideoDimensions] = useState<{width: number, height: number} | null>(null);
+
 
   const [potentialThumbnails, setPotentialThumbnails] = useState<(string | null)[]>(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
   const [potentialThumbnailBlobs, setPotentialThumbnailBlobs] = useState<(Blob | null)[]>(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
   const [selectedThumbnailIndex, setSelectedThumbnailIndex] = useState<number | null>(null);
   
-  const [isFileProcessing, setIsFileProcessing] = useState(false); // For initial file loading/metadata read
+  const [isFileProcessing, setIsFileProcessing] = useState(false); 
   const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -60,7 +66,7 @@ export default function UploadLocalVideoPage() {
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   };
   
-  const clearPreviousFileData = () => {
+  const clearPreviousFileData = useCallback(() => {
     console.log("UploadPage: clearPreviousFileData called");
     if (videoPreviewUrl) {
       console.log("UploadPage: Revoking old videoPreviewUrl:", videoPreviewUrl);
@@ -68,6 +74,7 @@ export default function UploadLocalVideoPage() {
     }
     setVideoPreviewUrl(null);
     setVideoDuration(0);
+    setVideoDimensions(null);
     potentialThumbnails.forEach((url, index) => { 
       if (url) {
         console.log(`UploadPage: Revoking old potentialThumbnail URL ${index}:`, url);
@@ -78,11 +85,6 @@ export default function UploadLocalVideoPage() {
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setSelectedThumbnailIndex(null);
     setIsGeneratingThumbnails(false);
-    // Keep title, desc, keywords, featured as user might be re-selecting file for same video details
-    // setTitle('');
-    // setDescription('');
-    // setKeywords('');
-    // setFeatured(false);
     setPreviewRotation(0);
     if (videoPreviewRef.current) {
         videoPreviewRef.current.src = "";
@@ -90,7 +92,9 @@ export default function UploadLocalVideoPage() {
         videoPreviewRef.current.poster = ""; 
         videoPreviewRef.current.load();
     }
-  }
+    console.log("UploadPage: clearPreviousFileData completed.");
+  }, [potentialThumbnails]);
+
 
   const resetForm = useCallback(() => {
     console.log("UploadPage: resetForm (full) called");
@@ -100,35 +104,39 @@ export default function UploadLocalVideoPage() {
     setIsUploading(false);
     setError(null);
     setSuccessMessage(null);
-    setTitle(''); // Full reset includes clearing metadata
+    setTitle(''); 
     setDescription('');
     setKeywords('');
     setFeatured(false);
+    setUploadStep("initial");
+    setIsFileProcessing(false);
     
     const fileInput = document.getElementById('local-video-file') as HTMLInputElement;
     if (fileInput) fileInput.value = '';
     console.log("UploadPage: resetForm (full) completed");
-  }, []); // Removed dependencies as clearPreviousFileData handles URL revoking internally.
+  }, [clearPreviousFileData]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    console.log("UploadPage: handleFileChange triggered.");
-    setError(null); // Clear previous errors
-    setSuccessMessage(null); // Clear previous success messages
+    console.log("UploadPage: File input onChange event fired.");
+    setError(null); 
+    setSuccessMessage(null);
     
     const file = event.target.files?.[0];
 
     if (file) {
       console.log("UploadPage: File selected:", file.name, file.type, file.size);
-      setIsFileProcessing(true); // Start processing feedback *after* confirming a file is selected.
-      clearPreviousFileData(); // Clear data from any *previous* file
+      clearPreviousFileData(); 
       setVideoFile(file); 
+      setIsFileProcessing(true);
+      setUploadStep("fileSelected");
 
       if (!file.type.startsWith('video/')) {
-        const typeError = "Invalid file type. Please select a video file (e.g., MP4, WebM).";
+        const typeError = "Invalid file type. Please select a video file (e.g., MP4, WebM, MOV).";
         console.error("UploadPage: " + typeError);
         setError(typeError);
         setIsFileProcessing(false);
         setVideoFile(null);
+        setUploadStep("initial");
         const fileInput = event.target as HTMLInputElement;
         if (fileInput) fileInput.value = '';
         return;
@@ -138,19 +146,21 @@ export default function UploadLocalVideoPage() {
       try {
         objectUrl = URL.createObjectURL(file);
         console.log("UploadPage: Created object URL for new file:", objectUrl);
-        setVideoPreviewUrl(objectUrl); // This will trigger the onLoadedMetadata of videoPreviewRef (due to key change or src change)
+        setVideoPreviewUrl(objectUrl); // This will trigger the onLoadedMetadata of videoPreviewRef
       } catch (urlError) {
         console.error("UploadPage: Error creating object URL:", urlError);
         setError("Could not create a preview for the selected file.");
         setIsFileProcessing(false);
         setVideoFile(null);
+        setUploadStep("initial");
         return;
       }
     } else {
       console.log("UploadPage: No file selected in this event (dialog cancelled).");
-      clearPreviousFileData(); // If user cancels, clear previews for any previous file
+      clearPreviousFileData(); 
       setVideoFile(null);
-      setIsFileProcessing(false); // Ensure spinner stops if dialog is cancelled
+      setIsFileProcessing(false); 
+      setUploadStep("initial");
     }
   };
 
@@ -158,20 +168,26 @@ export default function UploadLocalVideoPage() {
     console.log("UploadPage: handleVideoMetadataLoaded triggered for main preview.");
     if (videoPreviewRef.current && videoPreviewUrl) {
       const duration = videoPreviewRef.current.duration;
-      console.log(`UploadPage: Main video preview metadata loaded. Reported duration: ${duration}s`);
+      const width = videoPreviewRef.current.videoWidth;
+      const height = videoPreviewRef.current.videoHeight;
+      console.log(`UploadPage: Main video preview metadata loaded. Reported duration: ${duration}s. Dimensions: ${width}x${height}`);
+      
       if (duration > 0 && Number.isFinite(duration)) {
         setVideoDuration(duration);
-        generateThumbnailsFromVideoFile(videoPreviewUrl, duration);
+        setVideoDimensions({width, height});
+        setUploadStep("previewReady");
       } else {
         console.warn("UploadPage: Video duration is invalid or not available from main preview. Will use fallback for thumbnails if possible.", duration);
-        setError("Could not determine video duration accurately. Thumbnails may be inaccurate or fail.");
-        // Attempt thumbnail generation with a very short fallback duration, or fixed points
-        generateThumbnailsFromVideoFile(videoPreviewUrl, 0.1); // Fallback to 0.1s, knowing it might not be ideal
+        setError("Could not determine video duration accurately. Thumbnail generation might be affected or fail. You can still try to generate thumbnails.");
+        setVideoDuration(0.1); // Small fallback for trying
+        setVideoDimensions({width: width || 0, height: height || 0 });
+        setUploadStep("previewReady"); // Allow user to try generating thumbnails anyway
       }
     } else {
       console.warn("UploadPage: handleVideoMetadataLoaded called but videoPreviewRef or videoPreviewUrl is missing.");
+      setError("Video preview element not found. Please try re-selecting the file.");
     }
-    setIsFileProcessing(false); // Finished initial file processing (metadata read attempt)
+    setIsFileProcessing(false); 
   };
 
   const handleVideoPreviewError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
@@ -180,13 +196,16 @@ export default function UploadLocalVideoPage() {
     console.error("UploadPage: Main video preview - videoElement.error object:", videoError);
     setError(`Error loading video preview: ${videoError?.message || 'Unknown media error'}. The file might be corrupted or in an unsupported format.`);
     setIsFileProcessing(false);
-    // Optionally, still try to generate thumbnails if a videoPreviewUrl exists
-    if (videoPreviewUrl) {
-        console.warn("UploadPage: Main preview failed, but attempting thumbnail generation with fallback duration.");
-        generateThumbnailsFromVideoFile(videoPreviewUrl, 0.1); // Try with a small duration
-    }
+    setUploadStep("fileSelected"); // Revert to a state where they might retry or see the error
   };
 
+  const handleGenerateThumbnailsClick = () => {
+    if (videoPreviewUrl && videoDuration) {
+      generateThumbnailsFromVideoFile(videoPreviewUrl, videoDuration);
+    } else {
+      setError("Cannot generate thumbnails. Video preview or duration is not available.");
+    }
+  };
 
   const generateSpecificThumbnail = useCallback((videoObjectUrl: string, time: number, index: number): Promise<{ blob: Blob; blobUrl: string } | null> => {
     return new Promise((resolve) => {
@@ -200,10 +219,11 @@ export default function UploadLocalVideoPage() {
       const cleanupAndResolve = (value: { blob: Blob; blobUrl: string } | null) => {
         if (resolved) return;
         resolved = true;
+        clearTimeout(timeoutId);
         videoElement.removeEventListener('loadedmetadata', onMetadata);
         videoElement.removeEventListener('seeked', onSeeked);
-        videoElement.removeEventListener('error', onError);
-        videoElement.src = ""; // Release resources
+        videoElement.removeEventListener('error', onErrorHandler);
+        videoElement.src = ""; 
         videoElement.removeAttribute('src');
         videoElement.remove(); 
         resolve(value);
@@ -222,6 +242,7 @@ export default function UploadLocalVideoPage() {
       };
 
       const onSeeked = () => {
+        if (resolved) return;
         clearTimeout(timeoutId); 
         console.log(`UploadPage: Thumb[${index}] seeked to ${videoElement.currentTime}s. ReadyState: ${videoElement.readyState}. Capturing frame.`);
         
@@ -263,7 +284,8 @@ export default function UploadLocalVideoPage() {
         }
       };
       
-      const onError = (e: Event | string) => { 
+      const onErrorHandler = (e: Event | string) => { 
+        if (resolved) return;
         clearTimeout(timeoutId);
         console.error(`UploadPage: Thumb[${index}] video element error:`, videoElement.error, e); 
         cleanupAndResolve(null); 
@@ -271,7 +293,7 @@ export default function UploadLocalVideoPage() {
       
       videoElement.addEventListener('loadedmetadata', onMetadata);
       videoElement.addEventListener('seeked', onSeeked);
-      videoElement.addEventListener('error', onError);
+      videoElement.addEventListener('error', onErrorHandler);
       videoElement.src = videoObjectUrl;
       console.log(`UploadPage: Thumb[${index}] - Calling videoElement.load()`);
       videoElement.load(); 
@@ -283,14 +305,16 @@ export default function UploadLocalVideoPage() {
       console.error("UploadPage: Cannot generate thumbnails: video URL is missing.");
       setError("Cannot generate thumbnails: video URL is missing.");
       setIsGeneratingThumbnails(false);
+      setUploadStep("previewReady"); 
       return;
     }
-    // Use a very small positive duration if the reported duration is invalid, to attempt early frame grabs
+    
     const effectiveDurationForThumbnails = (duration > 0.01 && Number.isFinite(duration)) ? duration : 0.1; 
     console.log(`UploadPage: Generating thumbnails. Effective duration: ${effectiveDurationForThumbnails}s from URL: ${currentVideoObjectUrl.substring(0,30)}...`);
     setIsGeneratingThumbnails(true);
+    setUploadStep("thumbnailsGenerating");
     
-    const oldThumbURLs = [...potentialThumbnails]; // Store old URLs for revocation
+    const oldThumbURLs = [...potentialThumbnails]; 
 
     let timePoints: number[];
     if (effectiveDurationForThumbnails <= 0.1 && duration > 0.01) { 
@@ -315,6 +339,7 @@ export default function UploadLocalVideoPage() {
         if (!error) setError("Could not determine valid points in the video to create thumbnails. The video might be too short or problematic.");
         setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null)); 
         setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
+        setUploadStep("previewReady");
         oldThumbURLs.forEach(url => { if (url) URL.revokeObjectURL(url); });
         return;
     }
@@ -349,11 +374,12 @@ export default function UploadLocalVideoPage() {
     const firstValidIdx = newBlobs.findIndex(b => b !== null);
     setSelectedThumbnailIndex(firstValidIdx !== -1 ? firstValidIdx : null);
     setIsGeneratingThumbnails(false);
+    setUploadStep("thumbnailsReady");
     console.log(`UploadPage: Thumbnail generation completed. ${successfulGenerations} successful.`);
     if (successfulGenerations === 0 && !error) { 
         setError("Failed to generate any thumbnails. The video might be too short or in a format that's difficult to process for thumbnails in the browser.");
     }
-  }, [generateSpecificThumbnail, error]);
+  }, [generateSpecificThumbnail, error, potentialThumbnails]);
 
 
   const handleUploadSubmit = async (event: FormEvent) => {
@@ -378,6 +404,7 @@ export default function UploadLocalVideoPage() {
     }
 
     setIsUploading(true);
+    setUploadStep("uploading");
     setUploadProgress(0);
     setError(null);
     setSuccessMessage(null);
@@ -421,8 +448,8 @@ export default function UploadLocalVideoPage() {
         doctorName: doctorProfile.displayName || doctorProfile.email || 'Unknown Doctor',
         videoUrl: uploadedVideoUrl,
         thumbnailUrl: uploadedThumbnailUrl,
-        duration: formatTime(videoDuration), // Uses state `videoDuration`
-        recordingDuration: Math.round(videoDuration), // Uses state `videoDuration`
+        duration: formatTime(videoDuration), 
+        recordingDuration: Math.round(videoDuration), 
         tags: keywords.split(',').map(k => k.trim()).filter(Boolean),
         createdAt: new Date().toISOString(), 
         viewCount: 0,
@@ -444,13 +471,14 @@ export default function UploadLocalVideoPage() {
         const successMsg = `Video "${title}" uploaded and metadata saved!`;
         console.log("UploadPage: " + successMsg);
         setSuccessMessage(successMsg);
-        resetForm();
+        setUploadStep("success");
       } else {
         throw new Error(result.error || "Failed to save video metadata.");
       }
     } catch (err) {
       console.error("UploadPage: Upload failed:", err);
       setError(err instanceof Error ? err.message : "An unknown error occurred during upload.");
+      setUploadStep("fileSelected"); // Or some other error state
     } finally {
       setIsUploading(false);
       console.log("UploadPage: Upload process finished.");
@@ -468,6 +496,11 @@ export default function UploadLocalVideoPage() {
     return <div className="p-4 text-center text-destructive">Access Denied. You must be an admin to use this feature.</div>;
   }
 
+  const showVideoPreviewSection = uploadStep === "fileSelected" || uploadStep === "previewReady" || uploadStep === "thumbnailsGenerating" || uploadStep === "thumbnailsReady";
+  const showThumbnailsSection = uploadStep === "thumbnailsGenerating" || uploadStep === "thumbnailsReady";
+  const showMetadataForm = uploadStep === "thumbnailsReady";
+
+
   return (
     <div className="container mx-auto py-8 space-y-6">
       <Card className="shadow-xl rounded-lg">
@@ -476,7 +509,7 @@ export default function UploadLocalVideoPage() {
             <UploadCloud size={28} className="text-primary" /> Upload Local Video File
           </CardTitle>
           <CardDescription>
-            Select a video file from your device, add details, and upload it to the platform.
+            Select a video file, preview, generate thumbnails, add details, and upload.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -495,26 +528,28 @@ export default function UploadLocalVideoPage() {
             </Alert>
           )}
 
-          <div className="space-y-2">
-            <Label htmlFor="local-video-file" className="text-base">Select Video File</Label>
-            <Input
-              id="local-video-file"
-              type="file"
-              accept="video/*"
-              onChange={(e) => { console.log("UploadPage: File input onChange event fired."); handleFileChange(e); }}
-              className="text-base p-2 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
-              disabled={isUploading || isFileProcessing}
-            />
-          </div>
+          {uploadStep === "initial" && (
+            <div className="space-y-2">
+              <Label htmlFor="local-video-file" className="text-base">Select Video File</Label>
+              <Input
+                id="local-video-file"
+                type="file"
+                accept="video/*"
+                onChange={(e) => { console.log("UploadPage: File input onChange event fired."); handleFileChange(e); }}
+                className="text-base p-2 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                disabled={isUploading || isFileProcessing}
+              />
+            </div>
+          )}
           
-          {isFileProcessing && (
+          {isFileProcessing && uploadStep === "fileSelected" && (
              <div className="text-center py-4">
               <Loader2 className="h-6 w-6 animate-spin text-primary mx-auto mb-2" />
               <p className="text-sm text-muted-foreground">Processing video file...</p>
             </div>
           )}
 
-          {videoPreviewUrl && !isFileProcessing && (
+          {showVideoPreviewSection && videoPreviewUrl && (
             <>
               <div className="relative group">
                 <video
@@ -524,7 +559,7 @@ export default function UploadLocalVideoPage() {
                   playsInline
                   className="w-full aspect-video rounded-md border bg-slate-900 object-contain shadow-inner transition-transform duration-300 ease-in-out"
                   style={{ transform: `rotate(${previewRotation}deg)` }}
-                  key={videoPreviewUrl || 'video-preview-unique-key'} // Ensure re-render on src change
+                  key={videoPreviewUrl} 
                   onLoadedMetadata={handleVideoMetadataLoaded}
                   onError={handleVideoPreviewError}
                 />
@@ -539,20 +574,30 @@ export default function UploadLocalVideoPage() {
                 </Button>
                 {videoDuration > 0 && Number.isFinite(videoDuration) && (
                     <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 rounded text-xs">
-                        Duration: {formatTime(videoDuration)}
+                        Duration: {formatTime(videoDuration)} {videoDimensions && `(${videoDimensions.width}x${videoDimensions.height})`}
                     </div>
                 )}
               </div>
               
+              {uploadStep === "previewReady" && (
+                <Button 
+                    onClick={handleGenerateThumbnailsClick} 
+                    disabled={isGeneratingThumbnails || !(videoDuration > 0)}
+                    className="w-full sm:w-auto gap-2 bg-accent hover:bg-accent/90 text-accent-foreground"
+                >
+                    <Sparkles size={18} /> Generate Thumbnails
+                </Button>
+              )}
+
               {isGeneratingThumbnails && (
                 <div className="text-center py-4">
                   <Loader2 className="h-6 w-6 animate-spin text-primary mx-auto mb-2" />
                   <p className="text-sm text-muted-foreground">Generating thumbnails...</p>
                 </div>
               )}
-
-              {!isGeneratingThumbnails && potentialThumbnails.some(t => t) && (
-                <div>
+              
+              {showThumbnailsSection && !isGeneratingThumbnails && potentialThumbnails.some(t => t) && (
+                 <div>
                   <Label className="mb-2 block text-sm font-medium text-foreground">Select Thumbnail</Label>
                   <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
                     {potentialThumbnails.map((thumbUrl, index) => (
@@ -581,7 +626,7 @@ export default function UploadLocalVideoPage() {
                   {selectedThumbnailIndex === null && <p className="text-xs text-destructive mt-1">Please select a thumbnail.</p>}
                 </div>
               )}
-               {!isGeneratingThumbnails && !potentialThumbnails.some(t => t) && videoFile && (
+               {showThumbnailsSection && !isGeneratingThumbnails && !potentialThumbnails.some(t => t) && videoFile && (
                  <Alert variant="default" className="mt-4">
                     <Film className="h-4 w-4"/>
                     <AlertTitle>Thumbnails Pending or Failed</AlertTitle>
@@ -591,39 +636,42 @@ export default function UploadLocalVideoPage() {
                     </AlertDescription>
                 </Alert>
                )}
-
-              <form onSubmit={handleUploadSubmit} className="space-y-4 pt-4 border-t" id="upload-local-video-form">
-                <h3 className="text-lg font-semibold">Video Details</h3>
-                 <div className="space-y-1">
-                  <Label htmlFor="videoTitle">Video Title <span className="text-destructive">*</span></Label>
-                  <Input id="videoTitle" type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Enter a title for the video" required disabled={isUploading}/>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="videoDescription">Description</Label>
-                  <Textarea id="videoDescription" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Summarize the video content" rows={3} disabled={isUploading}/>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="videoKeywords">Keywords (comma-separated)</Label>
-                  <Input id="videoKeywords" type="text" value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="e.g., cardiology, tutorial" disabled={isUploading}/>
-                </div>
-                <div className="flex items-center space-x-2">
-                    <Checkbox id="featured" checked={featured} onCheckedChange={(checkedStatus) => setFeatured(Boolean(checkedStatus))} disabled={isUploading}/>
-                    <Label htmlFor="featured" className="font-normal text-sm">Feature this video</Label>
-                </div>
-                <Button
-                  type="submit"
-                  form="upload-local-video-form"
-                  disabled={!videoFile || selectedThumbnailIndex === null || !title.trim() || isUploading || (potentialThumbnails.some(t=>t) && (!potentialThumbnailBlobs[selectedThumbnailIndex!] || potentialThumbnailBlobs[selectedThumbnailIndex!]?.size === 0) ) }
-                  className="w-full gap-2 bg-primary hover:bg-primary/90 text-primary-foreground"
-                >
-                  {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud size={18} />}
-                  {isUploading ? 'Uploading...' : 'Upload Video to App'}
-                </Button>
-              </form>
             </>
           )}
 
-          {isUploading && (
+          {showMetadataForm && (
+            <form onSubmit={handleUploadSubmit} className="space-y-4 pt-4 border-t" id="upload-local-video-form">
+              <h3 className="text-lg font-semibold">Video Details</h3>
+                <div className="space-y-1">
+                <Label htmlFor="videoTitle">Video Title <span className="text-destructive">*</span></Label>
+                <Input id="videoTitle" type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Enter a title for the video" required disabled={isUploading}/>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="videoDescription">Description</Label>
+                <Textarea id="videoDescription" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Summarize the video content" rows={3} disabled={isUploading}/>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="videoKeywords">Keywords (comma-separated)</Label>
+                <Input id="videoKeywords" type="text" value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="e.g., cardiology, tutorial" disabled={isUploading}/>
+              </div>
+              <div className="flex items-center space-x-2">
+                  <Checkbox id="featured" checked={featured} onCheckedChange={(checkedStatus) => setFeatured(Boolean(checkedStatus))} disabled={isUploading}/>
+                  <Label htmlFor="featured" className="font-normal text-sm">Feature this video</Label>
+              </div>
+              <Button
+                type="submit"
+                form="upload-local-video-form"
+                disabled={!videoFile || selectedThumbnailIndex === null || !title.trim() || isUploading || (potentialThumbnails.some(t=>t) && (!potentialThumbnailBlobs[selectedThumbnailIndex!] || potentialThumbnailBlobs[selectedThumbnailIndex!]?.size === 0) ) }
+                className="w-full gap-2 bg-primary hover:bg-primary/90 text-primary-foreground"
+              >
+                {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud size={18} />}
+                {isUploading ? 'Uploading...' : 'Upload Video to App'}
+              </Button>
+            </form>
+          )}
+
+
+          {uploadStep === "uploading" && (
             <div className="space-y-2 pt-4 border-t">
               <Label>Upload Progress</Label>
               <Progress value={uploadProgress} className="w-full h-2.5" />
@@ -631,7 +679,7 @@ export default function UploadLocalVideoPage() {
             </div>
           )}
         </CardContent>
-        {successMessage && (
+        {uploadStep === "success" && (
              <CardFooter className="pt-4 border-t">
                 <Button onClick={resetForm} variant="outline" className="w-full sm:w-auto">
                     <RefreshCcw size={16} className="mr-2" /> Upload Another Video
@@ -642,6 +690,4 @@ export default function UploadLocalVideoPage() {
     </div>
   );
 }
-    
-
     
