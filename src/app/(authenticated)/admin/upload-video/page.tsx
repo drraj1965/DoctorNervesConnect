@@ -12,7 +12,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
 import { uploadFileToStorage, getFirebaseStorageDownloadUrl } from '@/lib/firebase/storage';
-import { saveUploadedVideoMetadataAction } from './actions'; // New action
+import { saveUploadedVideoMetadataAction } from './actions';
 import { UploadCloud, AlertCircle, CheckCircle, Loader2, Film, Image as ImageIcon, RefreshCcw, RotateCw } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import Image from 'next/image';
@@ -33,6 +33,8 @@ export default function UploadLocalVideoPage() {
   const [potentialThumbnails, setPotentialThumbnails] = useState<(string | null)[]>(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
   const [potentialThumbnailBlobs, setPotentialThumbnailBlobs] = useState<(Blob | null)[]>(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
   const [selectedThumbnailIndex, setSelectedThumbnailIndex] = useState<number | null>(null);
+  
+  const [isFileProcessing, setIsFileProcessing] = useState(false); // New state for initial file processing
   const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -59,15 +61,25 @@ export default function UploadLocalVideoPage() {
   };
   
   const resetForm = () => {
+    console.log("UploadPage: resetForm called");
     setVideoFile(null);
-    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    if (videoPreviewUrl) {
+      console.log("UploadPage: Revoking old videoPreviewUrl:", videoPreviewUrl);
+      URL.revokeObjectURL(videoPreviewUrl);
+    }
     setVideoPreviewUrl(null);
     setVideoDuration(0);
-    potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); });
+    potentialThumbnails.forEach((url, index) => { 
+      if (url) {
+        console.log(`UploadPage: Revoking old potentialThumbnail URL ${index}:`, url);
+        URL.revokeObjectURL(url); 
+      }
+    });
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setSelectedThumbnailIndex(null);
     setIsGeneratingThumbnails(false);
+    setIsFileProcessing(false);
     setTitle('');
     setDescription('');
     setKeywords('');
@@ -84,33 +96,71 @@ export default function UploadLocalVideoPage() {
     }
     const fileInput = document.getElementById('local-video-file') as HTMLInputElement;
     if (fileInput) fileInput.value = '';
+    console.log("UploadPage: resetForm completed");
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    resetForm(); // Reset previous state when a new file is selected
+    console.log("UploadPage: handleFileChange triggered.");
+    resetForm(); 
+    setError(null); // Clear previous errors
+    setIsFileProcessing(true); // Indicate start of processing
+
     const file = event.target.files?.[0];
     if (file) {
+      console.log("UploadPage: File selected:", file.name, file.type, file.size);
       if (!file.type.startsWith('video/')) {
-        setError("Invalid file type. Please select a video file.");
+        const typeError = "Invalid file type. Please select a video file (e.g., MP4, WebM).";
+        console.error("UploadPage: " + typeError);
+        setError(typeError);
+        setIsFileProcessing(false);
         return;
       }
       setVideoFile(file);
-      const url = URL.createObjectURL(file);
-      setVideoPreviewUrl(url);
-
-      // Get duration and generate thumbnails
-      const tempVideoEl = document.createElement('video');
-      tempVideoEl.preload = 'metadata';
-      tempVideoEl.onloadedmetadata = () => {
-        setVideoDuration(tempVideoEl.duration);
-        generateThumbnailsFromVideoFile(url, tempVideoEl.duration);
-        URL.revokeObjectURL(tempVideoEl.src); // Clean up temporary object URL
-      };
-      tempVideoEl.onerror = () => {
-        setError("Could not load video metadata. The file might be corrupted or in an unsupported format.");
-        URL.revokeObjectURL(tempVideoEl.src);
+      let objectUrl = '';
+      try {
+        objectUrl = URL.createObjectURL(file);
+        console.log("UploadPage: Created object URL:", objectUrl);
+        setVideoPreviewUrl(objectUrl);
+      } catch (urlError) {
+        console.error("UploadPage: Error creating object URL:", urlError);
+        setError("Could not create a preview for the selected file.");
+        setIsFileProcessing(false);
+        return;
       }
-      tempVideoEl.src = url; // Use the same URL as preview, it's fine
+
+      console.log("UploadPage: Creating temporary video element for metadata extraction.");
+      const tempVideoEl = document.createElement('video');
+      tempVideoEl.preload = 'metadata'; // Important for loading metadata quickly
+
+      tempVideoEl.onloadedmetadata = () => {
+        console.log(`UploadPage: tempVideoEl.onloadedmetadata - Duration: ${tempVideoEl.duration}s, Dimensions: ${tempVideoEl.videoWidth}x${tempVideoEl.videoHeight}`);
+        if (tempVideoEl.duration === Infinity || tempVideoEl.duration === 0 || isNaN(tempVideoEl.duration)) {
+            console.warn("UploadPage: Video duration reported as 0, NaN, or Infinity. This might affect thumbnail generation accuracy for some browsers/files. Will attempt to proceed.");
+            // For very short files or files where duration is not reported well, try a small positive number to avoid division by zero.
+            // A robust thumbnail generator should handle this.
+        }
+        setVideoDuration(tempVideoEl.duration > 0 && Number.isFinite(tempVideoEl.duration) ? tempVideoEl.duration : 0.1); // Use 0.1 as a fallback if needed
+        generateThumbnailsFromVideoFile(objectUrl, tempVideoEl.duration > 0 && Number.isFinite(tempVideoEl.duration) ? tempVideoEl.duration : 0.1);
+        URL.revokeObjectURL(tempVideoEl.src); 
+        setIsFileProcessing(false); 
+      };
+      tempVideoEl.onerror = (e) => {
+        console.error("UploadPage: tempVideoEl.onerror - Error loading video metadata. Event:", e, "Video error object:", tempVideoEl.error);
+        setError("Could not load video metadata. The file might be corrupted or in an unsupported format.");
+        URL.revokeObjectURL(tempVideoEl.src); 
+        setVideoPreviewUrl(null); // Clear preview if metadata fails
+        setVideoFile(null);
+        setIsFileProcessing(false);
+      }
+      
+      console.log("UploadPage: Setting tempVideoEl.src to:", objectUrl);
+      tempVideoEl.src = objectUrl; 
+      tempVideoEl.load(); // Explicitly call load
+      console.log("UploadPage: Called tempVideoEl.load(). Waiting for metadata or error...");
+
+    } else {
+      console.log("UploadPage: No file selected.");
+      setIsFileProcessing(false);
     }
   };
 
@@ -121,23 +171,26 @@ export default function UploadLocalVideoPage() {
       videoElement.preload = 'metadata';
       videoElement.muted = true;
       videoElement.src = videoObjectUrl;
-      videoElement.crossOrigin = "anonymous";
+      videoElement.crossOrigin = "anonymous"; // Important for canvas.toBlob if source is cross-origin (not for object URLs)
 
       let seekedFired = false;
       let metadataLoaded = false;
+      let resolved = false; // Guard against multiple resolutions
 
       const cleanupAndResolve = (value: { blob: Blob; blobUrl: string } | null) => {
-          videoElement.remove();
+          if (resolved) return;
+          resolved = true;
+          videoElement.remove(); // Ensure cleanup
           resolve(value);
       };
 
       const captureFrame = () => {
         if (videoElement.videoWidth === 0 || videoElement.videoHeight === 0) {
-            console.warn(`UploadPage: Thumbnail[${index}] - Video dimensions 0x0 at capture.`);
+            console.warn(`UploadPage: Thumbnail[${index}] - Video dimensions 0x0 at capture. Time: ${videoElement.currentTime}, ReadyState: ${videoElement.readyState}`);
             cleanupAndResolve(null); return;
         }
         const canvas = document.createElement('canvas');
-        const targetWidth = Math.min(videoElement.videoWidth || 320, 320);
+        const targetWidth = Math.min(videoElement.videoWidth || 320, 320); // Cap width for performance
         const scaleFactor = videoElement.videoWidth > 0 ? targetWidth / videoElement.videoWidth : 1;
         canvas.width = targetWidth;
         canvas.height = (videoElement.videoHeight || 180) * scaleFactor;
@@ -149,72 +202,122 @@ export default function UploadLocalVideoPage() {
                 ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
                 canvas.toBlob(blob => {
                     if (blob && blob.size > 0) {
+                        console.log(`UploadPage: Thumbnail[${index}] blob created. Size: ${blob.size}`);
                         cleanupAndResolve({ blob, blobUrl: URL.createObjectURL(blob) });
-                    } else { cleanupAndResolve(null); }
-                }, 'image/jpeg', 0.85);
-            } catch (drawError) { console.error(`UploadPage: Draw error for thumb ${index}`, drawError); cleanupAndResolve(null); }
-        } else { cleanupAndResolve(null); }
+                    } else { 
+                        console.warn(`UploadPage: Thumbnail[${index}] toBlob resulted in null or empty blob.`);
+                        cleanupAndResolve(null); 
+                    }
+                }, 'image/jpeg', 0.85); // Use JPEG for smaller size
+            } catch (drawError) { 
+                console.error(`UploadPage: DrawImage/toBlob error for thumb ${index}:`, drawError); 
+                cleanupAndResolve(null); 
+            }
+        } else { 
+            console.error(`UploadPage: Thumbnail[${index}] - Could not get 2D context for canvas.`);
+            cleanupAndResolve(null); 
+        }
       };
       
       videoElement.onloadedmetadata = async () => {
           metadataLoaded = true;
-          console.log(`UploadPage: Thumb[${index}] metadata. Duration: ${videoElement.duration}s. Dims: ${videoElement.videoWidth}x${videoElement.videoHeight}. Seeking to ${time}s.`);
+          console.log(`UploadPage: Thumb[${index}] metadata loaded. Reported duration: ${videoElement.duration}s. Dims: ${videoElement.videoWidth}x${videoElement.videoHeight}. Seeking to ${time}s.`);
           const seekTime = Math.max(0.01, Math.min(time, (videoElement.duration > 0 && Number.isFinite(videoElement.duration)) ? videoElement.duration - 0.01 : time));
+          console.log(`UploadPage: Thumb[${index}] - Calculated seekTime: ${seekTime} (original time: ${time})`);
           videoElement.currentTime = seekTime;
-          await new Promise(r => setTimeout(r, 50));
-          if (videoElement.readyState >= 2 && !seekedFired) captureFrame();
+          // Adding a small delay to allow seek to potentially complete, especially on tricky videos
+          await new Promise(r => setTimeout(r, 100)); 
+          if (videoElement.readyState >= 2 && !seekedFired) { // HAVE_CURRENT_DATA or more
+            console.log(`UploadPage: Thumb[${index}] - ReadyState ${videoElement.readyState} after seek. Capturing frame.`);
+            captureFrame();
+          } else if (!seekedFired) {
+            console.warn(`UploadPage: Thumb[${index}] - After seek, readyState is ${videoElement.readyState}. Waiting for onseeked.`);
+          }
       };
+
       videoElement.onseeked = () => {
           if (seekedFired) return;
-          if (!metadataLoaded) { console.warn(`UploadPage: Thumb[${index}] seeked before metadata.`); return; }
+          if (!metadataLoaded) { console.warn(`UploadPage: Thumb[${index}] seeked before metadata. This shouldn't happen often.`); }
           seekedFired = true;
+          console.log(`UploadPage: Thumb[${index}] seeked to ${videoElement.currentTime}. Capturing frame.`);
           captureFrame();
       };
-      videoElement.onerror = (e) => { console.error(`UploadPage: Thumb[${index}] video error:`, videoElement.error, e); cleanupAndResolve(null); };
+
+      videoElement.onerror = (e) => { 
+        console.error(`UploadPage: Thumb[${index}] video element error:`, videoElement.error, e); 
+        cleanupAndResolve(null); 
+      };
       
-      const timeout = setTimeout(() => { if (!seekedFired && !metadataLoaded) cleanupAndResolve(null); }, 5000);
-      videoElement.onseeked = () => { clearTimeout(timeout); /* Original onseeked logic duplicated */ if (seekedFired) return; if (!metadataLoaded) return; seekedFired = true; captureFrame(); };
-      videoElement.load();
+      const timeoutId = setTimeout(() => {
+          console.warn(`UploadPage: Thumb[${index}] - Generation timed out after 5s.`);
+          cleanupAndResolve(null);
+      }, 5000); // 5-second timeout per thumbnail
+
+      // Attach onseeked after timeout setup to ensure it can clear it
+      videoElement.onseeked = () => { 
+          clearTimeout(timeoutId);
+          if (seekedFired) return;
+          if (!metadataLoaded && videoElement.readyState < 1) { /* Still loading metadata */ return; }
+          seekedFired = true;
+          console.log(`UploadPage: Thumb[${index}] seeked to ${videoElement.currentTime} (timeout cleared). Capturing frame.`);
+          captureFrame();
+      };
+      
+      console.log(`UploadPage: Thumb[${index}] - Calling videoElement.load()`);
+      videoElement.load(); // Start loading the video
     });
   }, []);
 
   const generateThumbnailsFromVideoFile = useCallback(async (videoObjectUrl: string, duration: number) => {
-    if (!videoObjectUrl || duration <= 0) {
-      setError("Cannot generate thumbnails: video duration is invalid or URL missing.");
+    if (!videoObjectUrl) {
+      setError("Cannot generate thumbnails: video URL is missing.");
       return;
     }
-    console.log(`UploadPage: Generating thumbnails. Duration: ${duration}s`);
+    const effectiveDurationForThumbnails = duration > 0.01 && Number.isFinite(duration) ? duration : 0.1; // Ensure some duration if problematic
+    console.log(`UploadPage: Generating thumbnails from video file. URL (first 30): ${videoObjectUrl.substring(0,30)}..., Duration: ${effectiveDurationForThumbnails}s`);
     setIsGeneratingThumbnails(true);
+    
+    // Revoke old thumbnail object URLs before creating new ones
     potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); });
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
 
     let timePoints: number[];
-    if (duration < 1) { // Very short video
-        timePoints = [duration / 2, Math.min(duration * 0.9, duration - 0.01)].filter(t => t > 0.01).slice(0, NUM_THUMBNAILS_TO_GENERATE);
-        if(timePoints.length === 0 && duration > 0.01) timePoints = [duration * 0.5];
+    if (effectiveDurationForThumbnails < 1) { // Very short video
+        timePoints = [effectiveDurationForThumbnails / 2, Math.min(effectiveDurationForThumbnails * 0.9, effectiveDurationForThumbnails - 0.01)].filter(t => t >= 0.01).slice(0, NUM_THUMBNAILS_TO_GENERATE);
+        if(timePoints.length === 0 && effectiveDurationForThumbnails >= 0.01) timePoints = [effectiveDurationForThumbnails * 0.5];
     } else {
         timePoints = Array(NUM_THUMBNAILS_TO_GENERATE).fill(null).map((_, i) => {
-            const point = (duration / (NUM_THUMBNAILS_TO_GENERATE + 1)) * (i + 1);
-            return Math.max(0.01, Math.min(point, duration - 0.01));
+            const point = (effectiveDurationForThumbnails / (NUM_THUMBNAILS_TO_GENERATE + 1)) * (i + 1);
+            return Math.max(0.01, Math.min(point, effectiveDurationForThumbnails - 0.01)); // Ensure within bounds
         });
     }
-    const uniqueTimes = [...new Set(timePoints)].filter(t => Number.isFinite(t) && t > 0).slice(0, NUM_THUMBNAILS_TO_GENERATE);
+    const uniqueTimes = [...new Set(timePoints)].filter(t => Number.isFinite(t) && t >= 0.01).slice(0, NUM_THUMBNAILS_TO_GENERATE);
+    console.log("UploadPage: Thumbnail generation time points:", uniqueTimes);
 
+    if (uniqueTimes.length === 0) {
+        console.warn("UploadPage: No valid time points for thumbnail generation. Duration might be too short or problematic.");
+        setIsGeneratingThumbnails(false);
+        setError("Could not determine valid points in the video to create thumbnails.");
+        return;
+    }
+    
     const settledResults = await Promise.allSettled(
       uniqueTimes.map((time, index) => generateSpecificThumbnail(videoObjectUrl, time, index))
     );
 
     const newUrls: (string | null)[] = [];
     const newBlobs: (Blob | null)[] = [];
-    settledResults.forEach((result) => {
+    settledResults.forEach((result, idx) => {
       if (result.status === 'fulfilled' && result.value) {
+        console.log(`UploadPage: Thumbnail generation success for point ${uniqueTimes[idx]}s`);
         newUrls.push(result.value.blobUrl);
         newBlobs.push(result.value.blob);
+      } else if (result.status === 'rejected') {
+        console.error(`UploadPage: Thumbnail generation failed for point ${uniqueTimes[idx]}s:`, result.reason);
       }
     });
     
-    // Pad with nulls if fewer than NUM_THUMBNAILS_TO_GENERATE were successful
     while (newUrls.length < NUM_THUMBNAILS_TO_GENERATE) newUrls.push(null);
     while (newBlobs.length < NUM_THUMBNAILS_TO_GENERATE) newBlobs.push(null);
 
@@ -224,33 +327,38 @@ export default function UploadLocalVideoPage() {
     setSelectedThumbnailIndex(firstValidIdx !== -1 ? firstValidIdx : null);
     setIsGeneratingThumbnails(false);
     console.log(`UploadPage: Thumbnail generation completed. ${newBlobs.filter(b=>b).length} successful.`);
-  }, [generateSpecificThumbnail, potentialThumbnails]);
+    if (newBlobs.filter(b=>b).length === 0 && error === null) { // Set error if no thumbnails and no other error exists
+        setError("Failed to generate any thumbnails. The video might be too short or in a format that's difficult to process for thumbnails in the browser.");
+    }
+  }, [generateSpecificThumbnail, potentialThumbnails, error]);
 
 
   const handleUploadSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    console.log("UploadPage: handleUploadSubmit initiated.");
     if (!videoFile || selectedThumbnailIndex === null || !potentialThumbnailBlobs[selectedThumbnailIndex]) {
-      setError("Please select a video file and a thumbnail.");
-      return;
+      const msg = "Please select a video file and a thumbnail.";
+      console.error("UploadPage: " + msg); setError(msg); return;
     }
     const selectedThumbnailBlob = potentialThumbnailBlobs[selectedThumbnailIndex!];
     if (!selectedThumbnailBlob) {
-      setError("Selected thumbnail data is missing.");
-      return;
+      const msg = "Selected thumbnail data is missing.";
+      console.error("UploadPage: " + msg); setError(msg); return;
     }
     if (!title.trim()) {
-      setError("Video title is required.");
-      return;
+      const msg = "Video title is required.";
+      console.error("UploadPage: " + msg); setError(msg); return;
     }
     if (!user || !doctorProfile) {
-      setError("User or doctor profile not available. Please re-login.");
-      return;
+      const msg = "User or doctor profile not available. Please re-login.";
+      console.error("UploadPage: " + msg); setError(msg); return;
     }
 
     setIsUploading(true);
     setUploadProgress(0);
     setError(null);
     setSuccessMessage(null);
+    console.log("UploadPage: Starting upload process...");
 
     try {
       const safeTitle = title.replace(/[^a-z0-9_]+/gi, '_').toLowerCase() || uuidv4();
@@ -259,6 +367,7 @@ export default function UploadLocalVideoPage() {
       const videoFileName = `${safeTitle}_${timestamp}.${videoExtension}`;
       const thumbnailFileName = `thumbnail_${safeTitle}_${timestamp}.jpg`;
 
+      console.log(`UploadPage: Uploading video file: videos/${doctorProfile.uid}/${videoFileName}`);
       const videoStoragePath = await uploadFileToStorage(
         `videos/${doctorProfile.uid}`,
         videoFile,
@@ -266,8 +375,10 @@ export default function UploadLocalVideoPage() {
         (snapshot) => setUploadProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 0.9 * 100))
       );
       const uploadedVideoUrl = await getFirebaseStorageDownloadUrl(videoStoragePath);
+      console.log("UploadPage: Video file uploaded. URL:", uploadedVideoUrl);
       setUploadProgress(90);
 
+      console.log(`UploadPage: Uploading thumbnail file: thumbnails/${doctorProfile.uid}/${thumbnailFileName}`);
       const thumbnailStoragePath = await uploadFileToStorage(
         `thumbnails/${doctorProfile.uid}`,
         selectedThumbnailBlob,
@@ -275,6 +386,7 @@ export default function UploadLocalVideoPage() {
         (snapshot) => setUploadProgress(Math.round(90 + (snapshot.bytesTransferred / snapshot.totalBytes) * 0.1 * 100))
       );
       const uploadedThumbnailUrl = await getFirebaseStorageDownloadUrl(thumbnailStoragePath);
+      console.log("UploadPage: Thumbnail file uploaded. URL:", uploadedThumbnailUrl);
       setUploadProgress(100);
 
       const videoId = uuidv4();
@@ -289,8 +401,10 @@ export default function UploadLocalVideoPage() {
         duration: formatTime(videoDuration),
         recordingDuration: Math.round(videoDuration),
         tags: keywords.split(',').map(k => k.trim()).filter(Boolean),
-        createdAt: new Date().toISOString(), // Will be replaced by serverTimestamp in action
+        createdAt: new Date().toISOString(), 
         viewCount: 0,
+        likeCount: 0, 
+        commentCount: 0,
         featured,
         permalink: `/videos/${videoId}`,
         storagePath: videoStoragePath,
@@ -299,20 +413,24 @@ export default function UploadLocalVideoPage() {
         videoType: videoFile.type,
         comments: [],
       };
-
+      
+      console.log("UploadPage: Calling saveUploadedVideoMetadataAction with data:", videoData);
       const result = await saveUploadedVideoMetadataAction(videoData);
 
       if (result.success) {
-        setSuccessMessage(`Video "${title}" uploaded and metadata saved!`);
-        resetForm(); // Reset form after successful upload
+        const successMsg = `Video "${title}" uploaded and metadata saved!`;
+        console.log("UploadPage: " + successMsg);
+        setSuccessMessage(successMsg);
+        resetForm(); 
       } else {
         throw new Error(result.error || "Failed to save video metadata.");
       }
     } catch (err) {
-      console.error("Upload failed:", err);
+      console.error("UploadPage: Upload failed:", err);
       setError(err instanceof Error ? err.message : "An unknown error occurred during upload.");
     } finally {
       setIsUploading(false);
+      console.log("UploadPage: Upload process finished.");
     }
   };
 
@@ -360,13 +478,21 @@ export default function UploadLocalVideoPage() {
               id="local-video-file"
               type="file"
               accept="video/*"
-              onChange={handleFileChange}
+              onChange={(e) => { console.log("UploadPage: File input onChange event fired."); handleFileChange(e); }}
               className="text-base p-2 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
-              disabled={isUploading}
+              disabled={isUploading || isFileProcessing}
             />
           </div>
+          
+          {isFileProcessing && (
+             <div className="text-center py-4">
+              <Loader2 className="h-6 w-6 animate-spin text-primary mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">Processing video file...</p>
+            </div>
+          )}
 
-          {videoPreviewUrl && (
+
+          {videoPreviewUrl && !isFileProcessing && (
             <>
               <div className="relative group">
                 <video
@@ -376,7 +502,9 @@ export default function UploadLocalVideoPage() {
                   playsInline
                   className="w-full aspect-video rounded-md border bg-slate-900 object-contain shadow-inner transition-transform duration-300 ease-in-out"
                   style={{ transform: `rotate(${previewRotation}deg)` }}
-                  key={videoPreviewUrl}
+                  key={videoPreviewUrl} // Key helps React re-render if URL changes
+                  onLoadedMetadata={() => console.log("UploadPage: Main video preview metadata loaded.")}
+                  onError={(e) => console.error("UploadPage: Main video preview error:", e, videoPreviewRef.current?.error)}
                 />
                 <Button
                     onClick={handleRotatePreview}
@@ -431,6 +559,16 @@ export default function UploadLocalVideoPage() {
                   {selectedThumbnailIndex === null && <p className="text-xs text-destructive mt-1">Please select a thumbnail.</p>}
                 </div>
               )}
+               {!isGeneratingThumbnails && !potentialThumbnails.some(t => t) && videoFile && (
+                 <Alert variant="default" className="mt-4">
+                    <Film className="h-4 w-4"/>
+                    <AlertTitle>Thumbnails Pending or Failed</AlertTitle>
+                    <AlertDescription>
+                        {error && error.includes("thumbnail") ? error : "Thumbnails could not be generated for this video. You can still proceed to upload if you wish, or try a different video file. You can update the thumbnail later."}
+                    </AlertDescription>
+                </Alert>
+               )}
+
 
               <form onSubmit={handleUploadSubmit} className="space-y-4 pt-4 border-t" id="upload-local-video-form">
                 <h3 className="text-lg font-semibold">Video Details</h3>
@@ -453,7 +591,7 @@ export default function UploadLocalVideoPage() {
                 <Button
                   type="submit"
                   form="upload-local-video-form"
-                  disabled={!videoFile || selectedThumbnailIndex === null || !title.trim() || isUploading}
+                  disabled={!videoFile || selectedThumbnailIndex === null || !title.trim() || isUploading || !potentialThumbnailBlobs[selectedThumbnailIndex] }
                   className="w-full gap-2 bg-primary hover:bg-primary/90 text-primary-foreground"
                 >
                   {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud size={18} />}
@@ -482,3 +620,4 @@ export default function UploadLocalVideoPage() {
     </div>
   );
 }
+
