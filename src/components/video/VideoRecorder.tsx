@@ -17,10 +17,11 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Progress } from '@/components/ui/progress';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { createFFmpeg, fetchFile, FFmpeg } from '@ffmpeg/ffmpeg';
+
+// FFmpeg is imported dynamically later
 
 const NUM_THUMBNAILS_TO_GENERATE = 5;
-const PREVIEW_LOAD_TIMEOUT_MS = 15000;
+const PREVIEW_LOAD_TIMEOUT_MS = 15000; // 15 seconds
 
 type RecordingState = 'initial' | 'permission' | 'ready' | 'recording' | 'stopped' | 'uploading' | 'success' | 'error';
 
@@ -43,7 +44,9 @@ export default function VideoRecorder() {
   const thumbnailGenerationVideoUrl_cleanupRef = useRef<string | null>(null);
   const recordedVideoUrlRef_forCleanup = useRef<string | null>(null);
   const previewLoadTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const ffmpegRef = useRef<FFmpeg | null>(null);
+  
+  // FFmpeg instance will be stored here. Type as 'any' for dynamic import.
+  const ffmpegRef = useRef<any | null>(null);
 
 
   const [recordingState, setRecordingState] = useState<RecordingState>('initial');
@@ -68,16 +71,8 @@ export default function VideoRecorder() {
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [ffmpegLoading, setFfmpegLoading] = useState(false);
 
-  useEffect(() => {
-    // Initialize FFmpeg instance on component mount
-    if (!ffmpegRef.current) {
-      ffmpegRef.current = createFFmpeg({ 
-        log: true, 
-        corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js' 
-      });
-    }
-  }, []);
 
   const isStreamValid = useCallback(() => {
     if (!mediaStreamRef.current || !mediaStreamRef.current.active) {
@@ -218,7 +213,7 @@ export default function VideoRecorder() {
     }
     console.log(`VideoRecorder: Generating thumbnails. Duration: ${durationInSeconds}s`);
     setIsGeneratingThumbnails(true);
-    potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); }); // Revoke previous before setting new
+    potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); });
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
 
@@ -277,18 +272,18 @@ export default function VideoRecorder() {
     }
   }, [generateSpecificThumbnail, error, potentialThumbnails]);
 
-
+  // Effect for setting up recorded video preview
   useEffect(() => {
-    if (recordingState === 'stopped' && recordedVideoBlob) {
+    if (recordedVideoBlob && recordingState === 'stopped') {
+      console.log("VideoRecorder: Preparing recorded video preview. Blob size:", recordedVideoBlob.size);
       const objectUrl = URL.createObjectURL(recordedVideoBlob);
-      console.log("VideoRecorder: Preparing recorded video preview. New Object URL:", objectUrl.substring(0, 50) + "...");
       
       if (recordedVideoUrlRef_forCleanup.current) {
         URL.revokeObjectURL(recordedVideoUrlRef_forCleanup.current);
       }
       recordedVideoUrlRef_forCleanup.current = objectUrl;
       setRecordedVideoUrl(objectUrl);
-      setVideoElementKey('recorded-preview-' + Date.now()); // Force re-render
+      setVideoElementKey('recorded-preview-' + Date.now()); // Force re-render for video element
     } else if (recordingState !== 'stopped' && recordedVideoUrlRef_forCleanup.current) {
       URL.revokeObjectURL(recordedVideoUrlRef_forCleanup.current);
       recordedVideoUrlRef_forCleanup.current = null;
@@ -296,91 +291,88 @@ export default function VideoRecorder() {
     }
   }, [recordedVideoBlob, recordingState]);
 
-
+  // Effect for handling video element when key changes (e.g., for recorded preview)
   useEffect(() => {
     const videoElement = videoPreviewRef.current;
-    if (!videoElement || !videoElementKey.startsWith('recorded-preview-') || !recordedVideoUrl) {
-      // Only proceed if the key indicates recorded preview and we have a URL
-      return;
-    }
-    
-    console.log("VideoRecorder: Configuring video element for recorded preview (key changed). Src:", recordedVideoUrl.substring(0,50)+"...");
-    
-    videoElement.srcObject = null;
-    videoElement.src = recordedVideoUrl; // Set the new source
-    videoElement.muted = false;
-    videoElement.controls = true; // Programmatically ensure controls are on
-
-    const handleMetadataLoaded = () => {
-      setIsPreviewLoading(false);
-      if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
-      const reportedDuration = videoElement.duration;
-      const timerDuration = timerSecondsRef.current;
-      console.log(`VideoRecorder: Recorded preview metadata loaded. Element duration: ${isFinite(reportedDuration) ? reportedDuration.toFixed(2) : 'Infinity'} Timer duration: ${timerDuration} s.`);
+    if (videoElementKey.startsWith('recorded-preview-') && recordedVideoUrl && videoElement) {
+      console.log("VideoRecorder: Configuring video element for recorded preview (key changed). Src:", recordedVideoUrl.substring(0,50)+"...");
       
-      videoElement.play().catch(playError => {
-        console.error("VideoRecorder: Error playing recorded preview:", playError.name, playError.message);
-        setError(`Preview Error: ${playError.message}`);
-      });
+      videoElement.srcObject = null; 
+      videoElement.src = ""; 
+      videoElement.src = recordedVideoUrl;
+      videoElement.muted = false;
+      videoElement.controls = true; 
 
-      if (recordedVideoBlob && recordedVideoBlob.size > 0) {
-          const thumbGenBlobSlice = recordedVideoBlob.slice();
-          if (thumbnailGenerationVideoUrl_cleanupRef.current) {
-            URL.revokeObjectURL(thumbnailGenerationVideoUrl_cleanupRef.current);
-          }
-          const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
-          thumbnailGenerationVideoUrl_cleanupRef.current = thumbGenUrl;
-          generatePotentialThumbnails(thumbGenUrl, timerDuration > 0 ? timerDuration : (isFinite(reportedDuration) && reportedDuration > 0 ? reportedDuration : 0.1));
-      }
-    };
-
-    const handleError = (e: Event) => {
-      setIsPreviewLoading(false);
-      if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
-      const videoError = videoElement.error;
-      console.error("VideoRecorder: Recorded preview error. Event:", e, "Video Error Object:", videoError);
-      setError(`Preview Error. Code: ${videoError?.code}, Msg: ${videoError?.message || 'Unknown media error'}.`);
-      if (recordedVideoBlob && recordedVideoBlob.size > 0 && timerSecondsRef.current > 0) {
-          const thumbGenBlobSlice = recordedVideoBlob.slice();
-          if (thumbnailGenerationVideoUrl_cleanupRef.current) URL.revokeObjectURL(thumbnailGenerationVideoUrl_cleanupRef.current);
-          const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
-          thumbnailGenerationVideoUrl_cleanupRef.current = thumbGenUrl;
-          generatePotentialThumbnails(thumbGenUrl, timerSecondsRef.current);
-      }
-    };
-    
-    videoElement.addEventListener('loadedmetadata', handleMetadataLoaded, { once: true });
-    videoElement.addEventListener('error', handleError, { once: true });
-    
-    setIsPreviewLoading(true);
-    if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
-    previewLoadTimerRef.current = setTimeout(() => {
-      if (isPreviewLoading) {
-        console.warn("VideoRecorder: Preview load timed out.");
-        setError("Preview Error: Timed out waiting for video to load. Try saving locally.");
+      const handleMetadataLoaded = () => {
         setIsPreviewLoading(false);
-        if (recordedVideoBlob && timerSecondsRef.current > 0) {
+        if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
+        const reportedDuration = videoElement.duration;
+        const timerDuration = timerSecondsRef.current;
+        console.log(`VideoRecorder: Recorded preview metadata loaded. Element duration: ${isFinite(reportedDuration) ? reportedDuration.toFixed(2) : 'Infinity'} Timer duration: ${timerDuration} s.`);
+        
+        videoElement.play().catch(playError => {
+          console.error("VideoRecorder: Error playing recorded preview:", playError.name, playError.message);
+          setError(`Preview Error: ${playError.message}`);
+        });
+
+        if (recordedVideoBlob && recordedVideoBlob.size > 0) {
+            const thumbGenBlobSlice = recordedVideoBlob.slice();
+            if (thumbnailGenerationVideoUrl_cleanupRef.current) {
+              URL.revokeObjectURL(thumbnailGenerationVideoUrl_cleanupRef.current);
+            }
+            const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
+            thumbnailGenerationVideoUrl_cleanupRef.current = thumbGenUrl;
+            generatePotentialThumbnails(thumbGenUrl, timerDuration > 0 ? timerDuration : (isFinite(reportedDuration) && reportedDuration > 0 ? reportedDuration : 0.1));
+        }
+      };
+
+      const handleError = (e: Event) => {
+        setIsPreviewLoading(false);
+        if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
+        const videoError = videoElement.error;
+        console.error("VideoRecorder: Recorded preview error. Event:", e, "Video Error Object:", videoError);
+        setError(`Preview Error. Code: ${videoError?.code}, Msg: ${videoError?.message || 'Unknown media error'}.`);
+        if (recordedVideoBlob && recordedVideoBlob.size > 0 && timerSecondsRef.current > 0) {
             const thumbGenBlobSlice = recordedVideoBlob.slice();
             if (thumbnailGenerationVideoUrl_cleanupRef.current) URL.revokeObjectURL(thumbnailGenerationVideoUrl_cleanupRef.current);
             const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
             thumbnailGenerationVideoUrl_cleanupRef.current = thumbGenUrl;
             generatePotentialThumbnails(thumbGenUrl, timerSecondsRef.current);
         }
-      }
-    }, PREVIEW_LOAD_TIMEOUT_MS);
-
-    console.log("VideoRecorder: Calling videoElement.load() for recorded preview (key change effect).");
-    videoElement.load();
-
-    return () => {
-      if (videoElement) {
-        videoElement.removeEventListener('loadedmetadata', handleMetadataLoaded);
-        videoElement.removeEventListener('error', handleError);
-      }
+      };
+      
+      videoElement.addEventListener('loadedmetadata', handleMetadataLoaded, { once: true });
+      videoElement.addEventListener('error', handleError, { once: true });
+      
+      setIsPreviewLoading(true);
       if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
+      previewLoadTimerRef.current = setTimeout(() => {
+        if (isPreviewLoading) {
+          console.warn("VideoRecorder: Preview load timed out.");
+          setError("Preview Error: Timed out waiting for video to load. Try saving locally to verify.");
+          setIsPreviewLoading(false);
+          if (recordedVideoBlob && timerSecondsRef.current > 0) {
+              const thumbGenBlobSlice = recordedVideoBlob.slice();
+              if (thumbnailGenerationVideoUrl_cleanupRef.current) URL.revokeObjectURL(thumbnailGenerationVideoUrl_cleanupRef.current);
+              const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
+              thumbnailGenerationVideoUrl_cleanupRef.current = thumbGenUrl;
+              generatePotentialThumbnails(thumbGenUrl, timerSecondsRef.current);
+          }
+        }
+      }, PREVIEW_LOAD_TIMEOUT_MS);
+
+      console.log("VideoRecorder: Calling videoElement.load() for recorded preview (key change effect).");
+      videoElement.load();
+
+      return () => {
+        if (videoElement) {
+          videoElement.removeEventListener('loadedmetadata', handleMetadataLoaded);
+          videoElement.removeEventListener('error', handleError);
+        }
+        if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
+      }
     }
   }, [videoElementKey, recordedVideoUrl, recordedVideoBlob, generatePotentialThumbnails, isPreviewLoading]);
-
 
   const requestPermissionsAndSetup = useCallback(async () => {
     setError(null);
@@ -398,8 +390,7 @@ export default function VideoRecorder() {
       }
       mediaStreamRef.current = stream;
       console.log("VideoRecorder: Media permissions granted. Stream active:", mediaStreamRef.current.active);
-      setVideoElementKey('live-preview'); // This will trigger the effect below
-      // setRecordingState will be set by the effect below
+      setRecordingState('ready'); // This will trigger the useEffect below to setup live preview
     } catch (err) {
       console.error("VideoRecorder: Error accessing media devices:", err);
       const message = err instanceof Error ? err.message : String(err);
@@ -409,33 +400,31 @@ export default function VideoRecorder() {
     }
   }, [stopMediaStream]);
 
-  // Effect to play live stream
+  // Effect for playing live stream when state is 'ready'
   useEffect(() => {
-    if (videoElementKey === 'live-preview' && mediaStreamRef.current && videoPreviewRef.current && isStreamValid()) {
+    if (recordingState === 'ready' && mediaStreamRef.current && videoPreviewRef.current) {
       const videoElement = videoPreviewRef.current;
-      console.log("VideoRecorder: Configuring video element for live preview (key is 'live-preview').");
-      
       if (videoElement.srcObject !== mediaStreamRef.current) {
           videoElement.srcObject = mediaStreamRef.current;
           videoElement.src = ""; // Clear any blob src
           videoElement.muted = true;
           videoElement.controls = false;
+          setVideoElementKey('live-preview-' + Date.now()); // Ensure a key that signifies live preview
       }
       
-      console.log("VideoRecorder: Attempting to play live preview (key is 'live-preview').");
+      console.log("VideoRecorder: Attempting to play live preview as state is 'ready'.");
       videoElement.play()
         .then(() => {
           console.log("VideoRecorder: Live preview playing successfully.");
-          setRecordingState('ready');
         })
         .catch((playError: any) => {
-          console.error("VideoRecorder: Error playing live preview in requestPermissionsAndSetup:", playError.name, playError.message);
-          setError(`Failed to start camera preview: ${playError.message}. Please ensure permissions are granted and no other app is using the camera.`);
+          console.error("VideoRecorder: Error playing live preview in 'ready' state useEffect:", playError.name, playError.message);
+          setError(`Failed to start camera preview: ${playError.message}. Check console for details.`);
           stopMediaStream();
           setRecordingState('initial');
         });
     }
-  }, [videoElementKey, isStreamValid, stopMediaStream]);
+  }, [recordingState, stopMediaStream]);
 
 
   const getSupportedMimeType = useCallback(() => {
@@ -471,9 +460,10 @@ export default function VideoRecorder() {
     console.log("VideoRecorder: Stream validation passed for startRecording.");
     console.log("  - Stream object being passed to MediaRecorder:", mediaStreamRef.current);
     console.log("  - Stream active:", mediaStreamRef.current.active);
-    mediaStreamRef.current.getVideoTracks().forEach((track, idx) => console.log(`  - Track ${idx}: kind=${track.kind}, id=${track.id}, label='${track.label}', readyState=${track.readyState}, muted=${track.muted}, enabled=${track.enabled}`));
+    mediaStreamRef.current.getVideoTracks().forEach((track, idx) => console.log(`  - Track ${idx} (video): kind=${track.kind}, id=${track.id}, label='${track.label}', readyState=${track.readyState}, muted=${track.muted}, enabled=${track.enabled}`));
+    mediaStreamRef.current.getAudioTracks().forEach((track, idx) => console.log(`  - Track ${idx} (audio): kind=${track.kind}, id=${track.id}, label='${track.label}', readyState=${track.readyState}, muted=${track.muted}, enabled=${track.enabled}`));
 
-    // Ensure live preview is still running
+
     if (videoPreviewRef.current && videoPreviewRef.current.srcObject !== mediaStreamRef.current) {
         console.log("VideoRecorder: Re-setting preview to live stream for recording as it was lost.");
         videoPreviewRef.current.srcObject = mediaStreamRef.current;
@@ -483,7 +473,8 @@ export default function VideoRecorder() {
         videoPreviewRef.current.play().catch(e => console.warn("VideoRecorder: Error re-playing live preview for recording during startRecording:", e.name, e.message));
     }
     
-    setRecordedVideoBlob(null); setRecordedVideoUrl(null); setIsLocallySaved(false);
+    setRecordedVideoBlob(null); 
+    setIsLocallySaved(false);
     potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); });
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
@@ -532,31 +523,31 @@ export default function VideoRecorder() {
           setRecordingState('ready');
           return;
         }
-        setRecordedVideoBlob(blob);
+        setRecordedVideoBlob(blob); 
         setRecordingState('stopped');
       };
 
       recorder.onerror = (event) => {
         console.error("VideoRecorder: MediaRecorder error event:", event);
         let specificError = "A recording error occurred.";
-        if ('error' in event && event.error instanceof DOMException) {
+        // @ts-ignore DOMException is not always on event type, but often is in 'error' property
+        if (event.error instanceof DOMException) {
+             // @ts-ignore
             specificError = `Recorder Error: ${event.error.name} - ${event.error.message}`;
         }
         setError(specificError);
         if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
         setRecordingState('error');
-        stopMediaStream();
-        requestPermissionsAndSetup();
       };
       
       console.log("VideoRecorder: Calling mediaRecorderRef.current.start() with timeslice:", 1000);
-      recorder.start(1000);
+      recorder.start(1000); 
     } catch (e: any) {
       console.error("VideoRecorder: Failed to start MediaRecorder:", e);
       setError(`Failed to start recorder: ${e.message}. Ensure your browser supports MediaRecorder with the selected codecs.`);
       setRecordingState('error');
     }
-  }, [isStreamValid, getSupportedMimeType, requestPermissionsAndSetup, stopMediaStream, potentialThumbnails, actualMimeType]);
+  }, [isStreamValid, getSupportedMimeType, requestPermissionsAndSetup, potentialThumbnails, actualMimeType]);
 
 
   const stopRecording = useCallback(() => {
@@ -566,9 +557,9 @@ export default function VideoRecorder() {
     } else {
       console.warn("VideoRecorder: stopRecording called but recorder not in 'recording' state or not initialized.");
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-      setRecordingState('ready');
+      if (recordingState === 'recording') setRecordingState('ready');
     }
-  }, []);
+  }, [recordingState]);
 
 
   const resetRecorderState = useCallback((fullReset = true) => {
@@ -580,8 +571,8 @@ export default function VideoRecorder() {
     if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
     
     setRecordedVideoBlob(null); 
-    setRecordedVideoUrl(null);
     if (recordedVideoUrlRef_forCleanup.current) { URL.revokeObjectURL(recordedVideoUrlRef_forCleanup.current); recordedVideoUrlRef_forCleanup.current = null;}
+    setRecordedVideoUrl(null);
     
     potentialThumbnails.forEach(url => { if (url) URL.revokeObjectURL(url); });
     setPotentialThumbnails(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
@@ -604,7 +595,7 @@ export default function VideoRecorder() {
       console.log("VideoRecorder: Full reset, stopping media stream and re-requesting permissions.");
       stopMediaStream();
       setVideoElementKey('initial-key-' + Date.now());
-      setRecordingState('initial');
+      setRecordingState('initial'); 
     } else {
       console.log("VideoRecorder: Soft reset, attempting to go back to 'ready' state with existing stream.");
       if (mediaStreamRef.current && mediaStreamRef.current.active) {
@@ -634,7 +625,7 @@ export default function VideoRecorder() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    if (urlToSave !== recordedVideoUrl) URL.revokeObjectURL(urlToSave);
+    if (urlToSave !== recordedVideoUrl) URL.revokeObjectURL(urlToSave); 
     setIsLocallySaved(true);
     toast({ title: "Video Saved Locally", description: `Video saved as ${a.download}. You can now proceed to upload it.` });
   };
@@ -643,26 +634,39 @@ export default function VideoRecorder() {
   const handleRotatePreview = () => { setPreviewRotation(current => (current + 90) % 360); };
   
   const handleFFmpegLoad = async () => {
-    if (!ffmpegRef.current) {
-      setError("FFmpeg instance not available.");
-      toast({variant: "destructive", title: "FFmpeg Error", description: "Instance not ready."});
+    if (ffmpegRef.current && ffmpegLoaded) {
+      toast({title: "FFmpeg Ready", description: "FFmpeg is already loaded."});
       return;
     }
-    if (!ffmpegRef.current.isLoaded() && !ffmpegLoaded) {
-      try {
+    setFfmpegLoading(true);
+    setError(null);
+    try {
+      const { createFFmpeg } = await import('@ffmpeg/ffmpeg');
+      if (!ffmpegRef.current) {
+        console.log("VideoRecorder: Creating FFmpeg instance...");
+        // IMPORTANT: Ensure these files are in your `public/ffmpeg/` directory
+        // Create `public/ffmpeg` and copy `ffmpeg-core.js`, `ffmpeg-core.wasm`, 
+        // and `ffmpeg-core.worker.js` from `node_modules/@ffmpeg/core/dist/` into it.
+        ffmpegRef.current = createFFmpeg({ 
+          log: true, 
+          corePath: '/ffmpeg/ffmpeg-core.js', // Points to public/ffmpeg/ffmpeg-core.js
+        });
+      }
+      if (!ffmpegRef.current.isLoaded()) {
         console.log("VideoRecorder: Loading FFmpeg for thumbnails...");
         toast({title: "Loading FFmpeg", description: "Please wait, this may take a moment..."});
         await ffmpegRef.current.load();
-        setFfmpegLoaded(true);
-        toast({title: "FFmpeg Loaded", description: "Ready to generate thumbnails with FFmpeg."});
-        console.log("VideoRecorder: FFmpeg loaded successfully.");
-      } catch (err) {
-        console.error("VideoRecorder: Error loading FFmpeg:", err);
-        setError("Failed to load FFmpeg. Thumbnails via FFmpeg may not work.");
-        toast({variant: "destructive", title: "FFmpeg Load Failed", description: "Could not load FFmpeg."});
       }
-    } else {
-        toast({title: "FFmpeg Ready", description: "FFmpeg is already loaded."});
+      setFfmpegLoaded(true);
+      toast({title: "FFmpeg Loaded", description: "Ready to generate thumbnails with FFmpeg."});
+      console.log("VideoRecorder: FFmpeg loaded successfully.");
+    } catch (err) {
+      console.error("VideoRecorder: Error loading FFmpeg:", err);
+      setError("Failed to load FFmpeg. Thumbnails via FFmpeg may not work. Ensure assets are in public/ffmpeg/.");
+      toast({variant: "destructive", title: "FFmpeg Load Failed", description: "Could not load FFmpeg."});
+      setFfmpegLoaded(false); 
+    } finally {
+      setFfmpegLoading(false);
     }
   };
 
@@ -684,12 +688,13 @@ export default function VideoRecorder() {
     setPotentialThumbnailBlobs(Array(NUM_THUMBNAILS_TO_GENERATE).fill(null));
 
     try {
+      const { fetchFile } = await import('@ffmpeg/ffmpeg'); // Dynamically import fetchFile
       console.log("VideoRecorder: Generating thumbnails with FFmpeg...");
       toast({title: "Generating FFmpeg Thumbnails", description: "Processing video..."});
       const inputFileName = "input." + (actualMimeType.split('/')[1]?.split(';')[0] || 'webm');
       ffmpegRef.current.FS("writeFile", inputFileName, await fetchFile(recordedVideoBlob));
 
-      const duration = timerSecondsRef.current > 0 ? timerSecondsRef.current : 10;
+      const duration = timerSecondsRef.current > 0 ? timerSecondsRef.current : 10; 
       const timePoints = Array(NUM_THUMBNAILS_TO_GENERATE).fill(null).map((_, i) => {
         const point = (duration / (NUM_THUMBNAILS_TO_GENERATE + 1)) * (i + 1);
         return Math.max(0.1, Math.min(point, duration - 0.1)).toFixed(3);
@@ -700,8 +705,8 @@ export default function VideoRecorder() {
 
       for (let i = 0; i < timePoints.length; i++) {
         const outputFileName = `thumb-${i + 1}.jpg`;
-        console.log(`VideoRecorder: FFmpeg -ss ${timePoints[i]} -i ${inputFileName} -vframes 1 ${outputFileName}`);
-        await ffmpegRef.current.run('-ss', timePoints[i], '-i', inputFileName, '-vframes', '1', '-q:v', '3', outputFileName);
+        console.log(`VideoRecorder: FFmpeg -ss ${timePoints[i]} -i ${inputFileName} -vframes 1 -q:v 3 ${outputFileName}`);
+        await ffmpegRef.current.run('-ss', timePoints[i], '-i', inputFileName, '-vframes', '1', '-q:v', '3', '-vf', 'scale=320:-1', outputFileName);
         const data = ffmpegRef.current.FS('readFile', outputFileName);
         const blob = new Blob([data.buffer], { type: 'image/jpeg' });
         if (blob.size > 0) {
@@ -820,7 +825,8 @@ export default function VideoRecorder() {
   const showSetupButton = recordingState === 'initial';
   const showRecordControls = recordingState === 'ready' || recordingState === 'recording';
   const showReviewAndUpload = recordingState === 'stopped' || recordingState === 'error' ;
-  const showVideoElement = recordingState !== 'initial' && recordingState !== 'permission' && recordingState !== 'uploading' && recordingState !== 'success';
+  const isVideoElementVisible = recordingState === 'ready' || recordingState === 'recording' || (recordingState === 'stopped' && !!recordedVideoUrl) || recordingState === 'permission';
+
 
   return (
     <Card className="w-full max-w-3xl mx-auto shadow-xl rounded-lg">
@@ -830,6 +836,7 @@ export default function VideoRecorder() {
         </CardTitle>
         <CardDescription>
           Record, review, and upload your video. Ensure good lighting and clear audio.
+          To use FFmpeg for thumbnails, copy files from <code>node_modules/@ffmpeg/core/dist/</code> to <code>public/ffmpeg/</code> directory.
         </CardDescription>
       </CardHeader>
 
@@ -856,14 +863,14 @@ export default function VideoRecorder() {
             </div>
         )}
 
-        {showVideoElement && (
+        {isVideoElementVisible && (
           <div className="relative group">
             <video
               key={videoElementKey}
               ref={videoPreviewRef}
               muted={recordingState !== 'stopped'} 
               controls={recordingState === 'stopped' && !!recordedVideoUrl}
-              playsInline
+              playsInline 
               className="w-full aspect-video rounded-md border bg-slate-900 object-contain shadow-inner transition-transform duration-300 ease-in-out"
               style={{ transform: `rotate(${previewRotation}deg)` }}
             />
@@ -940,20 +947,21 @@ export default function VideoRecorder() {
                             variant="outline" size="sm" className="gap-1.5">
                         {isGeneratingThumbnails && !ffmpegLoaded ? <Loader2 className="animate-spin"/> : <ImageIcon size={16}/>} Generate (Canvas)
                     </Button>
-                    {ffmpegRef.current && !ffmpegLoaded && 
-                        <Button onClick={handleFFmpegLoad} variant="outline" size="sm" className="gap-1.5">
-                            <Settings2 size={16}/> Load FFmpeg
+                    {!ffmpegLoaded && 
+                        <Button onClick={handleFFmpegLoad} variant="outline" size="sm" className="gap-1.5" disabled={ffmpegLoading}>
+                            {ffmpegLoading ? <Loader2 className="animate-spin"/> : <Settings2 size={16}/>} Load FFmpeg
                         </Button>
                     }
-                    {ffmpegRef.current && ffmpegLoaded && 
+                    {ffmpegLoaded && 
                         <Button onClick={handleGenerateThumbnailsWithFFmpeg} 
-                                disabled={isGeneratingThumbnails || !recordedVideoBlob || recordingState === 'uploading'} 
+                                disabled={isGeneratingThumbnails || !recordedVideoBlob || recordingState === 'uploading' || ffmpegLoading} 
                                 variant="outline" size="sm" className="gap-1.5">
                            {isGeneratingThumbnails ? <Loader2 className="animate-spin"/> : <Film size={16}/>} Generate (FFmpeg)
                         </Button>
                     }
                 </div>
                 {isGeneratingThumbnails && <p className="text-xs text-muted-foreground">Generating thumbnails, please wait...</p>}
+                {ffmpegLoading && <p className="text-xs text-muted-foreground">Loading FFmpeg, please wait...</p>}
                 
                 {potentialThumbnails.some(t => t) && !isGeneratingThumbnails && (
                     <div>
@@ -998,7 +1006,7 @@ export default function VideoRecorder() {
 
       </CardContent>
       <CardFooter className="pt-4 border-t">
-        <Button onClick={() => resetRecorderState(true)} variant="outline" className="w-full sm:w-auto" disabled={recordingState === 'recording' || recordingState === 'uploading'}>
+        <Button onClick={() => resetRecorderState(true)} variant="outline" className="w-full sm:w-auto" disabled={recordingState === 'recording' || recordingState === 'uploading' || ffmpegLoading}>
             <RefreshCcw size={16} className="mr-2" /> Reset Recorder
         </Button>
       </CardFooter>
