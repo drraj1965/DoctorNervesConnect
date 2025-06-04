@@ -3,29 +3,22 @@
 
 import { db } from "@/lib/firebase/config";
 import { doc, setDoc, serverTimestamp, getDoc } from "firebase/firestore";
-import type { VideoMeta, DoctorProfile } from "@/types";
+import type { VideoMeta, DoctorProfile, VideoDataForCreation } from "@/types"; // Import VideoDataForCreation
 import { revalidatePath } from "next/cache";
 
-// The data coming from VideoRecorder.tsx's handleUpload
-// This type should match what the client is sending, ensuring all necessary fields are present
-// and correctly typed before they even reach this action.
-interface VideoDataForCreation extends Omit<VideoMeta, 'createdAt' | 'permalink' | 'viewCount' | 'likeCount' | 'commentCount' | 'comments'> {
-  // 'id' is already part of VideoMeta and will be provided by the client.
-}
-
 export async function addVideoMetadataToFirestore(videoData: VideoDataForCreation): Promise<{ success: boolean; id?: string; error?: string }> {
-  const videoId = videoData.id; // Use videoData.id directly as the document ID
+  const id = videoData.id; // Use videoData.id as the document ID
 
-  console.log("[Action:addVideoMetadataToFirestore] Received videoId from videoData.id:", videoId);
+  console.log("[Action:addVideoMetadataToFirestore] Received id:", id);
   console.log("[Action:addVideoMetadataToFirestore] Full videoData from client:", JSON.stringify(videoData, null, 2));
 
-  if (!videoId || typeof videoId !== 'string' || videoId.trim() === '') {
-    const errorMsg = "Invalid videoId (from videoData.id) received. Cannot save metadata.";
+  if (!id || typeof id !== 'string' || id.trim() === '') {
+    const errorMsg = "Invalid video ID (id field) received. Cannot save metadata.";
     console.error(`[Action:addVideoMetadataToFirestore] ${errorMsg}`);
     return { success: false, error: errorMsg };
   }
 
-  // Doctor admin check logging (already present, seems okay)
+  // Log doctor admin status check (for debugging, rules are the source of truth)
   if (videoData.doctorId) {
     try {
       const doctorDocRef = doc(db, "doctors", videoData.doctorId);
@@ -34,66 +27,71 @@ export async function addVideoMetadataToFirestore(videoData: VideoDataForCreatio
         const doctorProfileData = doctorDocSnap.data() as DoctorProfile;
         console.log(`[Action:addVideoMetadataToFirestore] Doctor profile for ${videoData.doctorId} (used for isAdmin check):`, JSON.stringify(doctorProfileData));
         if (doctorProfileData.isAdmin !== true) {
-          console.warn(`[Action:addVideoMetadataToFirestore] DOCTOR ${videoData.doctorId} IS NOT ADMIN. isAdmin: ${doctorProfileData.isAdmin}`);
+          console.warn(`[Action:addVideoMetadataToFirestore] DOCTOR ${videoData.doctorId} IS NOT ADMIN based on Firestore doc. isAdmin: ${doctorProfileData.isAdmin}. Auth UID for rule check is request.auth.uid.`);
         } else {
-          console.log(`[Action:addVideoMetadataToFirestore] DOCTOR ${videoData.doctorId} IS ADMIN.`);
+          console.log(`[Action:addVideoMetadataToFirestore] DOCTOR ${videoData.doctorId} IS ADMIN based on Firestore doc.`);
         }
       } else {
-        console.warn(`[Action:addVideoMetadataToFirestore] No doctor document found for UID ${videoData.doctorId}. Firestore rules will deny if they depend on this specific doctorId being an admin.`);
+        console.warn(`[Action:addVideoMetadataToFirestore] No doctor document found for UID ${videoData.doctorId}. Firestore rules (isAdmin check) will likely deny.`);
       }
     } catch (profileError) {
       console.error(`[Action:addVideoMetadataToFirestore] Error fetching doctor profile for ${videoData.doctorId}:`, profileError);
     }
   } else {
-    console.error("[Action:addVideoMetadataToFirestore] No doctorId provided in videoData. Firestore rules might deny if dependent on this.");
+    console.error("[Action:addVideoMetadataToFirestore] No doctorId provided in videoData. Firestore rules might deny if dependent on this for doctorId == request.auth.uid or isAdmin check.");
   }
 
   try {
-    const videoDocRef = doc(db, "videos", videoId);
+    const videoDocRef = doc(db, "videos", id);
 
-    // Construct finalData explicitly, ensuring all VideoMeta fields are covered
+    // Construct finalData ensuring all VideoMeta fields and rule requirements are met.
+    // VideoDataForCreation type ensures client sends most required fields.
+    // Provide defaults for fields optional in VideoMeta but whose types are checked by rules.
     const finalData: VideoMeta = {
-      id: videoId,
-      title: videoData.title,
-      description: videoData.description,
-      doctorId: videoData.doctorId,
-      doctorName: videoData.doctorName,
-      videoUrl: videoData.videoUrl,
-      thumbnailUrl: videoData.thumbnailUrl,
-      duration: videoData.duration, // String like "01:23"
-      tags: videoData.tags || [],
-      featured: videoData.featured || false,
-      storagePath: videoData.storagePath,
-      thumbnailStoragePath: videoData.thumbnailStoragePath,
+      // Fields from videoData (client)
+      id: id, // Rule: request.resource.data.id == videoId
+      title: videoData.title, // Rule: is string, size > 0
+      description: videoData.description || "", // Rule: is string. Default to "" if client sends null/undefined.
+      doctorId: videoData.doctorId, // Rule: doctorId == request.auth.uid
+      doctorName: videoData.doctorName, // Rule: is string
+      videoUrl: videoData.videoUrl, // Rule: is string, size > 0
+      thumbnailUrl: videoData.thumbnailUrl, // Rule: is string, size > 0
+      duration: videoData.duration, // Rule: is string
+      tags: Array.isArray(videoData.tags) ? videoData.tags : [], // Rule: is list. Default to [].
+      featured: typeof videoData.featured === 'boolean' ? videoData.featured : false, // Rule: is bool. Default to false.
+      storagePath: videoData.storagePath, // Rule: is string
+      thumbnailStoragePath: videoData.thumbnailStoragePath, // Rule: is string
+
+      // Optional fields in VideoMeta that are checked by rules. Ensure they have valid types.
+      videoSize: typeof videoData.videoSize === 'number' ? videoData.videoSize : 0, // Rule: is number. Default to 0.
+      videoType: videoData.videoType || 'application/octet-stream', // Rule: is string. Default.
       
-      // Fields that might be optional on input but required on VideoMeta
+      // Optional field in VideoMeta, not directly checked by rules' type constraints.
       recordingDuration: typeof videoData.recordingDuration === 'number' ? videoData.recordingDuration : undefined,
-      videoSize: typeof videoData.videoSize === 'number' ? videoData.videoSize : undefined,
-      videoType: videoData.videoType || 'video/webm', // Default if not provided
 
       // Fields initialized/set by the server action
-      createdAt: serverTimestamp() as any, // Firestore will convert this
-      permalink: `/videos/${videoId}`,
-      viewCount: 0,
-      likeCount: 0,
-      commentCount: 0,
-      comments: [], // Initialize as empty array
+      createdAt: serverTimestamp() as any, // Not in request.resource.data for create rule check
+      permalink: `/videos/${id}`, // Rule: is string
+      viewCount: 0, // Rule: is number
+      likeCount: 0, // Rule: is number
+      commentCount: 0, // Rule: is number
+      comments: [], // Rule: is list
     };
     
     console.log("[Action:addVideoMetadataToFirestore] FINAL data object for Firestore setDoc:", JSON.stringify(finalData, null, 2));
 
     await setDoc(videoDocRef, finalData);
-    console.log("[Action:addVideoMetadataToFirestore] Successfully set document in Firestore for videoId:", videoId);
+    console.log("[Action:addVideoMetadataToFirestore] Successfully set document in Firestore for id:", id);
 
     revalidatePath('/dashboard');
     revalidatePath('/admin/dashboard');
     revalidatePath('/videos');
-    revalidatePath(`/videos/${videoId}`);
+    revalidatePath(`/videos/${id}`);
     revalidatePath('/admin/manage-content');
 
-    return { success: true, id: videoId };
+    return { success: true, id: id };
   } catch (error: any) {
-    console.error("[Action:addVideoMetadataToFirestore] CRITICAL ERROR saving video metadata for videoId:", videoId, error);
+    console.error("[Action:addVideoMetadataToFirestore] CRITICAL ERROR saving video metadata for id:", id, error);
     let errorMessage = "Unknown error saving video metadata";
     if (error.code === 'permission-denied' || (error.message && error.message.includes("PERMISSION_DENIED"))) {
       errorMessage = `Firestore save error: PERMISSION_DENIED: Missing or insufficient permissions. (Code: ${error.code || 'permission-denied'})`;
@@ -105,8 +103,6 @@ export async function addVideoMetadataToFirestore(videoData: VideoDataForCreatio
       errorMessage = error;
     }
     console.error("[Action:addVideoMetadataToFirestore] Error message being returned to client:", errorMessage);
-    return { success: false, error: errorMessage, id: videoId }; // Return id even on failure for debugging
+    return { success: false, error: errorMessage, id: id };
   }
 }
-
-    
