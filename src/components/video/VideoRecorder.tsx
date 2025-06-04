@@ -102,6 +102,7 @@ export default function VideoRecorder() {
     };
   }, [stopMediaStream, potentialThumbnails]);
 
+
   const generateSpecificThumbnail = useCallback(async (videoObjectUrlForThumb: string, time: number, index: number): Promise<{ blob: Blob; blobUrl: string } | null> => {
     return new Promise((resolve) => {
       if (!videoObjectUrlForThumb) {
@@ -284,16 +285,19 @@ export default function VideoRecorder() {
     }
   }, [recordedVideoBlob, recordingState]);
 
+
+  // This effect handles setting up the video element for the recorded preview
+  // AFTER the videoElementKey has changed and recordedVideoUrl is set.
   useEffect(() => {
     const videoElement = videoPreviewRef.current;
     if (videoElementKey.startsWith('recorded-preview-') && recordedVideoUrl && videoElement) {
       console.log("VideoRecorder: Configuring video element for recorded preview (key changed). Src:", recordedVideoUrl.substring(0,50)+"...");
       
-      videoElement.srcObject = null; 
-      videoElement.src = ""; 
+      videoElement.srcObject = null; // CRITICAL: clear any live stream
+      videoElement.src = ""; // Clear old src just in case
       videoElement.src = recordedVideoUrl;
       videoElement.muted = false;
-      videoElement.controls = true;
+      videoElement.controls = true; // CRITICAL: ensure controls are enabled
 
       const handleMetadataLoaded = () => {
         setIsPreviewLoading(false);
@@ -304,14 +308,20 @@ export default function VideoRecorder() {
         
         videoElement.play().catch(playError => {
           console.error("VideoRecorder: Error playing recorded preview:", playError.name, playError.message);
-          setError(`Preview Error: ${playError.message}`);
+          // Don't set a generic error here as the video might still be usable for thumbnails
+          toast({variant: "destructive", title: "Preview Playback Issue", description: `Could not auto-play: ${playError.message}`});
         });
 
         if (recordedVideoBlob && recordedVideoBlob.size > 0) {
-            const thumbGenBlobSlice = recordedVideoBlob.slice(); // Create a new slice if necessary
+            // Use a new URL for thumbnail generation to avoid issues if the main preview URL is revoked too early
+            const thumbGenBlobSlice = recordedVideoBlob.slice(); 
             const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
-            generatePotentialThumbnails(thumbGenUrl, timerDuration > 0 ? timerDuration : (isFinite(reportedDuration) && reportedDuration > 0 ? reportedDuration : 0.1));
-             // Consider revoking thumbGenUrl if it's different and not auto-revoked by browser
+            generatePotentialThumbnails(thumbGenUrl, timerDuration > 0 ? timerDuration : (isFinite(reportedDuration) && reportedDuration > 0 ? reportedDuration : 0.1))
+                .finally(() => {
+                    // Clean up the temporary URL used for thumbnail generation
+                    console.log("VideoRecorder: Revoking temporary URL for thumbnail generation:", thumbGenUrl.substring(0,50)+"...");
+                    URL.revokeObjectURL(thumbGenUrl);
+                });
         }
       };
 
@@ -320,11 +330,14 @@ export default function VideoRecorder() {
         if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
         const videoError = videoElement.error;
         console.error("VideoRecorder: Recorded preview error. Event:", e, "Video Error Object:", videoError);
-        setError(`Preview Error. Code: ${videoError?.code}, Msg: ${videoError?.message || 'Unknown media error'}.`);
+        setError(`Preview Error. Code: ${videoError?.code}, Msg: ${videoError?.message || 'Unknown media error'}. The recording may be corrupted.`);
         if (recordedVideoBlob && recordedVideoBlob.size > 0 && timerSecondsRef.current > 0) {
             const thumbGenBlobSlice = recordedVideoBlob.slice();
             const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
-            generatePotentialThumbnails(thumbGenUrl, timerSecondsRef.current);
+            generatePotentialThumbnails(thumbGenUrl, timerSecondsRef.current)
+              .finally(() => {
+                  URL.revokeObjectURL(thumbGenUrl);
+              });
         }
       };
       
@@ -341,20 +354,50 @@ export default function VideoRecorder() {
           if (recordedVideoBlob && timerSecondsRef.current > 0) {
               const thumbGenBlobSlice = recordedVideoBlob.slice();
               const thumbGenUrl = URL.createObjectURL(thumbGenBlobSlice);
-              generatePotentialThumbnails(thumbGenUrl, timerSecondsRef.current);
+              generatePotentialThumbnails(thumbGenUrl, timerSecondsRef.current)
+                .finally(() => {
+                    URL.revokeObjectURL(thumbGenUrl);
+                });
           }
         }
       }, PREVIEW_LOAD_TIMEOUT_MS);
 
       console.log("VideoRecorder: Calling videoElement.load() for recorded preview (key change effect).");
-      videoElement.load();
+      videoElement.load(); // ESSENTIAL to make the browser process the new src
 
       return () => {
         if (previewLoadTimerRef.current) clearTimeout(previewLoadTimerRef.current);
+        // Event listeners are {once: true}, so no explicit removal needed for them here
+        // The main recordedVideoUrlRef_forCleanup.current is revoked in the top-level useEffect
       }
     }
-  }, [videoElementKey, recordedVideoUrl, recordedVideoBlob, generatePotentialThumbnails, isPreviewLoading]);
+  }, [videoElementKey, recordedVideoUrl, recordedVideoBlob, generatePotentialThumbnails, isPreviewLoading, toast]);
 
+  // This effect handles setting up the live preview.
+  useEffect(() => {
+    if (recordingState === 'ready' && mediaStreamRef.current && videoPreviewRef.current) {
+      const videoElement = videoPreviewRef.current;
+      // Ensure srcObject is correctly set if it was somehow cleared or changed
+      if (videoElement.srcObject !== mediaStreamRef.current) {
+          videoElement.srcObject = mediaStreamRef.current;
+          videoElement.src = ""; // Clear any blob src
+          videoElement.muted = true;
+          videoElement.controls = false;
+      }
+      
+      console.log("VideoRecorder: Attempting to play live preview as state is 'ready'.");
+      videoElement.play()
+        .then(() => {
+          console.log("VideoRecorder: Live preview playing successfully.");
+        })
+        .catch((playError: any) => {
+          console.error("VideoRecorder: Error playing live preview in 'ready' state useEffect:", playError.name, playError.message);
+          setError(`Failed to start camera preview: ${playError.message}. Check console for details.`);
+          stopMediaStream();
+          setRecordingState('initial');
+        });
+    }
+  }, [recordingState, stopMediaStream]); // Removed isStreamValid as it might cause issues with stale closures
 
   const requestPermissionsAndSetup = useCallback(async () => {
     setError(null);
@@ -373,8 +416,7 @@ export default function VideoRecorder() {
       mediaStreamRef.current = stream;
       console.log("VideoRecorder: Media permissions granted, stream is in mediaStreamRef.current.");
       setVideoElementKey('live-preview'); 
-      // The useEffect listening to 'live-preview' key will handle playing.
-      // setRecordingState('ready'); // This will be set by the useEffect after play is attempted.
+      setRecordingState('ready');
     } catch (err) {
       console.error("VideoRecorder: Error accessing media devices:", err);
       const message = err instanceof Error ? err.message : String(err);
@@ -383,38 +425,6 @@ export default function VideoRecorder() {
       setRecordingState('initial');
     }
   }, [stopMediaStream]);
-
-
-  useEffect(() => {
-    if (videoElementKey === 'live-preview' && mediaStreamRef.current && videoPreviewRef.current) {
-      const videoElement = videoPreviewRef.current;
-      if (!isStreamValid()) { 
-          console.warn("VideoRecorder: Live preview effect - stream became invalid. Resetting.");
-          setError("Camera stream became unavailable. Please try setting up again.");
-          stopMediaStream();
-          setRecordingState('initial');
-          return;
-      }
-      console.log("VideoRecorder: Configuring video element for live preview (key is 'live-preview').");
-      videoElement.src = ""; 
-      videoElement.srcObject = mediaStreamRef.current;
-      videoElement.muted = true;
-      videoElement.controls = false;
-      
-      console.log("VideoRecorder: Attempting to play live preview (key is 'live-preview').");
-      videoElement.play()
-        .then(() => {
-          console.log("VideoRecorder: Live preview playing successfully.");
-          setRecordingState('ready');
-        })
-        .catch((playError: any) => {
-          console.error("VideoRecorder: Error playing live preview in 'live-preview' key useEffect:", playError.name, playError.message);
-          setError(`Failed to start camera preview: ${playError.message}. Check console for details.`);
-          stopMediaStream();
-          setRecordingState('initial');
-        });
-    }
-  }, [videoElementKey, isStreamValid, stopMediaStream]);
 
 
   const getSupportedMimeType = useCallback(() => {
@@ -441,7 +451,7 @@ export default function VideoRecorder() {
   const startRecording = useCallback(() => {
     setError(null);
     console.log("VideoRecorder: Attempting to start recording...");
-    if (!isStreamValid() || !mediaStreamRef.current) {
+    if (!mediaStreamRef.current || !mediaStreamRef.current.active || mediaStreamRef.current.getVideoTracks().length === 0 || mediaStreamRef.current.getVideoTracks()[0].readyState !== 'live') {
       setError("Media stream not ready or invalid. Please re-setup camera.");
       console.error("VideoRecorder: startRecording - stream invalid or null.");
       requestPermissionsAndSetup(); 
@@ -536,7 +546,7 @@ export default function VideoRecorder() {
       setError(`Failed to start recorder: ${e.message}. Ensure your browser supports MediaRecorder with the selected codecs.`);
       setRecordingState('error');
     }
-  }, [isStreamValid, getSupportedMimeType, requestPermissionsAndSetup, potentialThumbnails, actualMimeType]);
+  }, [getSupportedMimeType, requestPermissionsAndSetup, potentialThumbnails, actualMimeType]);
 
 
   const stopRecording = useCallback(() => {
@@ -632,7 +642,7 @@ export default function VideoRecorder() {
         console.log("VideoRecorder: Creating FFmpeg instance (v0.11.0)...");
         ffmpegRef.current = createFFmpeg({ 
           log: true, 
-          corePath: '/ffmpeg/ffmpeg-core.js', // For v0.11.0, relative to public root
+          corePath: '/ffmpeg/ffmpeg-core.js', // For v0.11.0, this loads .wasm and .worker.js relative to this
         });
       }
       if (!ffmpegRef.current.isLoaded()) {
@@ -819,7 +829,7 @@ export default function VideoRecorder() {
         </CardTitle>
         <CardDescription>
           Record, review, and upload your video. Ensure good lighting and clear audio.
-          <strong>IMPORTANT for FFmpeg:</strong> After these changes, you MUST delete your `node_modules` folder and `package-lock.json` (or `yarn.lock`), then run `npm install` (or `yarn install`). Then, copy the <strong>v0.11.0</strong> versions of `ffmpeg-core.js`, `ffmpeg-core.wasm`, and `ffmpeg-core.worker.js` from `node_modules/@ffmpeg/core/dist/` into your `public/ffmpeg/` directory.
+          <strong>IMPORTANT for FFmpeg:</strong> You MUST delete your `node_modules` folder and `package-lock.json` (or `yarn.lock`), then run `npm install` (or `yarn install`) to use FFmpeg v0.11.0. Then, copy the <strong>v0.11.0</strong> versions of `ffmpeg-core.js`, `ffmpeg-core.wasm`, and `ffmpeg-core.worker.js` from `node_modules/@ffmpeg/core/dist/` into your `public/ffmpeg/` directory.
         </CardDescription>
       </CardHeader>
 
