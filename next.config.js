@@ -49,32 +49,20 @@ const nextConfig = {
     ],
   },
   webpack: (config, { isServer }) => {
-    // For FFmpeg to work, we need to ensure that @ffmpeg/core is not bundled by the server.
-    // It's used client-side and loads WASM.
+    // For FFmpeg to work, we need to ensure that @ffmpeg/core and @ffmpeg/ffmpeg are not bundled by the server.
+    // They are used client-side and load WASM.
     if (isServer) {
       if (!config.externals) {
         config.externals = [];
       }
       config.externals.push('@ffmpeg/core');
+      config.externals.push('@ffmpeg/ffmpeg'); // Add the wrapper library as external too
     }
     
     // Important for resolving WASM and worker files correctly with FFmpeg,
-    // especially when corePath points to public directory.
+    // especially when corePath points to public directory or CDN.
     // This ensures that files referenced by FFmpeg from public are served as static assets.
     config.output.publicPath = '/_next/';
-
-
-    // This rule is sometimes needed for libraries that emit their own worker files.
-    // It ensures that '.worker.js' files are handled as assets.
-    // config.module.rules.push({
-    //   test: /\.worker\.js$/,
-    //   loader: 'worker-loader',
-    //   options: {
-    //     filename: 'static/chunks/[name].[contenthash].js',
-    //     publicPath: '/_next/',
-    //   },
-    // });
-
 
     return config;
   },
