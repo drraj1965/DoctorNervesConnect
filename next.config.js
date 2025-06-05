@@ -51,23 +51,20 @@ const nextConfig = {
   webpack: (config, { isServer }) => {
     // For FFmpeg to work, we need to ensure that @ffmpeg/core and @ffmpeg/ffmpeg are not bundled by the server.
     // They are used client-side and load WASM.
-    if (isServer) {
-      if (!config.externals) {
-        config.externals = [];
-      }
-      // Ensure these are not already present before pushing to avoid duplicates
-      if (!config.externals.includes('@ffmpeg/core')) {
-        config.externals.push('@ffmpeg/core');
-      }
-      if (!config.externals.includes('@ffmpeg/ffmpeg')) {
-        config.externals.push('@ffmpeg/ffmpeg');
-      }
-    }
+    // FFmpeg is no longer used, so externals are removed.
+    // if (isServer) {
+    //   if (!config.externals) {
+    //     config.externals = [];
+    //   }
+    //   // Ensure these are not already present before pushing to avoid duplicates
+    //   if (!config.externals.includes('@ffmpeg/core')) {
+    //     config.externals.push('@ffmpeg/core');
+    //   }
+    //   if (!config.externals.includes('@ffmpeg/ffmpeg')) {
+    //     config.externals.push('@ffmpeg/ffmpeg');
+    //   }
+    // }
     
-    // The config.output.publicPath modification is removed as we are loading FFmpeg assets from CDN,
-    // and this particular setting might not be relevant or could conflict.
-    // The primary issue is server-side module resolution which 'externals' aims to address.
-
     return config;
   },
 };
