@@ -55,13 +55,22 @@ const nextConfig = {
       if (!config.externals) {
         config.externals = [];
       }
-      config.externals.push('@ffmpeg/core');
-      config.externals.push('@ffmpeg/ffmpeg'); // Add the wrapper library as external too
+      // Ensure these are not already present before pushing to avoid duplicates
+      if (!config.externals.includes('@ffmpeg/core')) {
+        config.externals.push('@ffmpeg/core');
+      }
+      if (!config.externals.includes('@ffmpeg/ffmpeg')) {
+        config.externals.push('@ffmpeg/ffmpeg');
+      }
     }
     
     // Important for resolving WASM and worker files correctly with FFmpeg,
     // especially when corePath points to public directory or CDN.
     // This ensures that files referenced by FFmpeg from public are served as static assets.
+    // Our current setup uses CDN for corePath, so this might be less critical for FFmpeg's own asset loading.
+    if (!config.output) { // Defensive check for output object
+        config.output = {};
+    }
     config.output.publicPath = '/_next/';
 
     return config;
