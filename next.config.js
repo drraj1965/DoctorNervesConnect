@@ -64,14 +64,9 @@ const nextConfig = {
       }
     }
     
-    // Important for resolving WASM and worker files correctly with FFmpeg,
-    // especially when corePath points to public directory or CDN.
-    // This ensures that files referenced by FFmpeg from public are served as static assets.
-    // Our current setup uses CDN for corePath, so this might be less critical for FFmpeg's own asset loading.
-    if (!config.output) { // Defensive check for output object
-        config.output = {};
-    }
-    config.output.publicPath = '/_next/';
+    // The config.output.publicPath modification is removed as we are loading FFmpeg assets from CDN,
+    // and this particular setting might not be relevant or could conflict.
+    // The primary issue is server-side module resolution which 'externals' aims to address.
 
     return config;
   },
