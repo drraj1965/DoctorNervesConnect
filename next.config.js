@@ -49,22 +49,8 @@ const nextConfig = {
     ],
   },
   webpack: (config, { isServer }) => {
-    // For FFmpeg to work, we need to ensure that @ffmpeg/core and @ffmpeg/ffmpeg are not bundled by the server.
-    // They are used client-side and load WASM.
-    // FFmpeg is no longer used, so externals are removed.
-    // if (isServer) {
-    //   if (!config.externals) {
-    //     config.externals = [];
-    //   }
-    //   // Ensure these are not already present before pushing to avoid duplicates
-    //   if (!config.externals.includes('@ffmpeg/core')) {
-    //     config.externals.push('@ffmpeg/core');
-    //   }
-    //   if (!config.externals.includes('@ffmpeg/ffmpeg')) {
-    //     config.externals.push('@ffmpeg/ffmpeg');
-    //   }
-    // }
-    
+    // If you have other webpack customizations, keep them.
+    // FFmpeg externals removed as FFmpeg is no longer used.
     return config;
   },
 };

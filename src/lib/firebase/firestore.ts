@@ -15,23 +15,21 @@ import {
   serverTimestamp,
   setDoc,
   deleteDoc,
-  updateDoc, // Added updateDoc
+  updateDoc,
 } from "firebase/firestore";
 import type { VideoMeta, DoctorProfile } from "@/types";
 
 const getSafeCreatedAtISO = (createdAtValue: any): string => {
   if (!createdAtValue) {
-    return new Date().toISOString(); // Fallback if createdAt is null/undefined
+    return new Date().toISOString(); 
   }
   if (createdAtValue instanceof Timestamp) {
     return createdAtValue.toDate().toISOString();
   }
   if (typeof createdAtValue === 'string') {
-    // Attempt to parse and re-format to ensure it's a valid ISO string
     try {
       return new Date(createdAtValue).toISOString();
     } catch (e) {
-      // If parsing fails, return current date as fallback
       return new Date().toISOString();
     }
   }
@@ -50,7 +48,7 @@ export const addVideoMetadata = async (videoData: Omit<VideoMeta, 'id' | 'create
     const docRef = await addDoc(collection(db, "videos"), {
       ...videoData,
       createdAt: serverTimestamp(),
-      comments: videoData.comments || [], // Ensure comments is an array
+      comments: videoData.comments || [], 
     });
     const permalink = `/videos/${docRef.id}`;
     await setDoc(doc(db, "videos", docRef.id), { permalink, id: docRef.id }, { merge: true });
@@ -64,18 +62,9 @@ export const addVideoMetadata = async (videoData: Omit<VideoMeta, 'id' | 'create
 export const updateVideoMetadata = async (videoId: string, dataToUpdate: Partial<VideoMeta>): Promise<void> => {
   try {
     const videoDocRef = doc(db, "videos", videoId);
-    // Ensure createdAt is not overwritten if not explicitly provided or is a serverTimestamp
     const { createdAt, ...restOfData } = dataToUpdate;
     let updatePayload: any = restOfData;
-    if (createdAt && typeof createdAt === 'object' && 'toDate' in createdAt) { // Check if it's a Timestamp-like object
-        // If we want to allow updating createdAt (usually not recommended unless specific reason)
-        // updatePayload.createdAt = createdAt; 
-    } else if (typeof createdAt === 'string') {
-        // updatePayload.createdAt = Timestamp.fromDate(new Date(createdAt));
-    }
-    // Generally, avoid updating createdAt directly after creation unless for specific migration tasks.
-    // For most updates, createdAt should remain as is.
-
+    
     await updateDoc(videoDocRef, updatePayload);
   } catch (error) {
     console.error("Error updating video metadata: ", error);
@@ -95,19 +84,32 @@ export const getVideosCount = async (): Promise<number> => {
   }
 };
 
-export const getRecentVideos = async (days: number, countLimit: number = 5): Promise<VideoMeta[]> => {
+// Updated to fetch featured videos for RecentActivityFeed
+export const getRecentVideos = async (days: number = 7, countLimit: number = 5, featuredOnly: boolean = false): Promise<VideoMeta[]> => {
   try {
     const videosCollection = collection(db, "videos");
     const referenceDate = new Date();
     referenceDate.setDate(referenceDate.getDate() - days);
     const referenceTimestamp = Timestamp.fromDate(referenceDate);
 
-    const q = query(
-      videosCollection,
-      where("createdAt", ">=", referenceTimestamp),
-      orderBy("createdAt", "desc"),
-      limit(countLimit)
-    );
+    let q;
+    if (featuredOnly) {
+      q = query(
+        videosCollection,
+        where("featured", "==", true),
+        where("createdAt", ">=", referenceTimestamp), // Ensure it's also recent if days constraint applies
+        orderBy("createdAt", "desc"),
+        limit(countLimit)
+      );
+    } else {
+       q = query(
+        videosCollection,
+        where("createdAt", ">=", referenceTimestamp),
+        orderBy("createdAt", "desc"),
+        limit(countLimit)
+      );
+    }
+
     const querySnapshot = await getDocs(q);
     const videos: VideoMeta[] = [];
     querySnapshot.forEach((docSnap) => {

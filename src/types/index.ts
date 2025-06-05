@@ -9,23 +9,23 @@ export interface UserProfile extends FirebaseUser {
 
 export interface DoctorProfile extends UserProfile {
   specialization?: string;
-  firstName?: string; // From your logs, these exist
+  firstName?: string; 
   lastName?: string;
   username?: string;
-  doctor_email?: string; // Match field names from logs if different from UserProfile.email
+  doctor_email?: string; 
   doctor_mobile?: string;
-  isAdmin?: boolean; // This is crucial
+  isAdmin?: boolean; 
 }
 
 export interface VideoComment {
-  id: string; // Unique ID for the comment
+  id: string; 
   userId: string;
   userName: string;
-  userPhotoUrl?: string; // Optional: for displaying avatar
+  userPhotoUrl?: string; 
   text: string;
   createdAt: string; // ISO date string
-  parentId?: string | null; // For threading/replies
-  replies?: VideoComment[]; // For nested display, though direct array update in Firestore is hard
+  parentId?: string | null; 
+  replies?: VideoComment[]; 
 }
 
 export interface VideoMeta {
@@ -36,15 +36,14 @@ export interface VideoMeta {
   doctorName: string;
   videoUrl: string;
   thumbnailUrl: string;
-  duration: string; // Formatted string e.g., "01:23"
+  duration: string; // Formatted string e.g., "01:23" or "01:23:45"
   recordingDuration?: number; // Actual duration in seconds, as a number
   tags: string[];
   createdAt: string; // ISO date string (or Firestore Timestamp on server, converted to string for client)
   viewCount: number;
-  // likeCount and commentCount are good to have for consistency, required by rules
   likeCount: number;
   commentCount: number;
-  featured: boolean;
+  featured: boolean; // To show in "Recent Activities"
   permalink: string;
   storagePath: string; // Full path in Firebase Storage for the video file
   thumbnailStoragePath: string; // Full path in Firebase Storage for the thumbnail
@@ -53,33 +52,36 @@ export interface VideoMeta {
   comments?: VideoComment[];
 }
 
-// This type represents the data structure the VideoRecorder client will prepare and send
-// for creating a new video's metadata. It omits fields that are purely server-set.
-export type VideoDataForCreation = Omit<VideoMeta, 'createdAt' | 'permalink' | 'viewCount' | 'likeCount' | 'commentCount' | 'comments'>;
+// Type for data prepared by client (web recorder) before sending to server action
+// Omits fields that are purely server-set or derived during the save process.
+export type VideoDataForWebRecordCreation = Pick<VideoMeta, 
+  'id' | 'title' | 'description' | 'doctorId' | 'doctorName' | 
+  'videoUrl' | 'thumbnailUrl' | 'duration' | 'recordingDuration' | 
+  'tags' | 'featured' | 'storagePath' | 'thumbnailStoragePath' | 
+  'videoSize' | 'videoType'
+>;
 
 
 export interface Article {
   id: string;
   title: string;
-  content: string; // Or a more structured format like Delta for rich text
+  content: string; 
   doctorId: string;
   doctorName: string;
   tags: string[];
   createdAt: string; // ISO date string
   updatedAt?: string; // ISO date string
   isPublished: boolean;
-  // Add other fields like excerpt, featuredImage, etc.
 }
 
 export interface Question {
   id: string;
   patientId: string;
-  patientName: string; // Consider denormalizing for display
-  doctorId: string; // ID of the doctor it's assigned to, or null if open
+  patientName: string; 
+  doctorId: string; 
   questionText: string;
   answerText?: string;
   isAnswered: boolean;
   createdAt: string; // ISO date string
   answeredAt?: string; // ISO date string
-  // Add other fields like category, attachments, etc.
 }
