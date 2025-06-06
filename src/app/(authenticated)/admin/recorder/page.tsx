@@ -48,7 +48,7 @@ export default function WebVideoRecorderPage() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
   const setMediaStream = useCallback((stream: MediaStream | null) => {
-    if (mediaStreamRef.current && mediaStreamRef.current !== stream) {
+    if (mediaStreamRef.current && mediaStreamRef.current !== stream && mediaStreamRef.current.active) {
       console.log("RecorderPage: Cleaning up old mediaStream in setMediaStream for stream ID:", mediaStreamRef.current.id);
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
     }
@@ -78,7 +78,6 @@ export default function WebVideoRecorderPage() {
   const [isLocallySaved, setIsLocallySaved] = useState(false);
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
 
-  // Auth check and redirect
   useEffect(() => {
     if (!authLoading && !isAdmin) {
       console.log("RecorderPage: Auth loaded, user is NOT admin. Redirecting to /dashboard.");
@@ -87,10 +86,12 @@ export default function WebVideoRecorderPage() {
   }, [authLoading, isAdmin, router]);
 
   const cleanupStream = useCallback(() => {
-    if (mediaStreamRef.current) {
+    if (mediaStreamRef.current && mediaStreamRef.current.active) {
       console.log("RecorderPage: cleanupStream called. Stopping tracks for stream ID:", mediaStreamRef.current.id);
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       setMediaStream(null); 
+    } else {
+        console.log("RecorderPage: cleanupStream called, but no active stream to clean.");
     }
   }, [setMediaStream]);
 
@@ -99,11 +100,11 @@ export default function WebVideoRecorderPage() {
       console.log("RecorderPage: cleanupRecordedVideo - Revoking recordedVideoUrl:", recordedVideoUrl);
       URL.revokeObjectURL(recordedVideoUrl);
     }
-    setRecordedVideoUrl(null); // Always set to null to clear state
+    setRecordedVideoUrl(null);
     setRecordedVideoBlob(null);
     recordedChunksRef.current = [];
     console.log("RecorderPage: cleanupRecordedVideo - Done.");
-  }, [recordedVideoUrl]); // Depends on recordedVideoUrl to decide if revocation is needed
+  }, [recordedVideoUrl]);
 
 
   const cleanupThumbnails = useCallback(() => {
@@ -121,8 +122,9 @@ export default function WebVideoRecorderPage() {
 
 
   const requestPermissionsAndSetup = useCallback(async () => {
-    console.log(`RecorderPage: requestPermissionsAndSetup - Called. Current step: ${recorderStepRef.current}. MediaStream active: ${mediaStreamRef.current?.active}`);
+    console.log(`RecorderPage: requestPermissionsAndSetup - Called. Current step: ${recorderStepRef.current}. MediaStream active: ${!!mediaStreamRef.current?.active}`);
     if (mediaStreamRef.current && mediaStreamRef.current.active) {
+      console.log("RecorderPage: requestPermissionsAndSetup - Stream already active, setting to readyToRecord.");
       setRecorderStep("readyToRecord");
       return;
     }
@@ -157,7 +159,6 @@ export default function WebVideoRecorderPage() {
     }
   }, [setMediaStream, setRecorderStep]);
 
-  // Effect for initial setup and re-setup after reset
   useEffect(() => {
     console.log(`RecorderPage: Setup Effect Triggered - authLoading: ${authLoading}, isAdmin: ${isAdmin}, recorderStep: ${_recorderStep}`);
     if (!authLoading && isAdmin) {
@@ -168,26 +169,37 @@ export default function WebVideoRecorderPage() {
     }
   }, [authLoading, isAdmin, _recorderStep, requestPermissionsAndSetup]);
 
-  // Effect for unmount cleanup - THIS IS CRITICAL TO GET RIGHT
+  // Unmount cleanup effect
   useEffect(() => {
-    // This function itself will be called on unmount
+    const currentMediaStream = mediaStreamRef.current;
+    const currentRecordedVideoUrl = recordedVideoUrl; // Capture current value
+    const currentPotentialThumbnails = [...potentialThumbnails]; // Capture current value
+    const currentTimer = recordingTimerRef.current;
+
     return () => {
       console.log("RecorderPage: Component UNMOUNTING - Performing cleanup.");
       
-      // Call memoized cleanup functions
-      cleanupStream();
-      cleanupRecordedVideo();
-      cleanupThumbnails();
-      
-      if (recordingTimerRef.current) {
-        clearInterval(recordingTimerRef.current);
-        recordingTimerRef.current = null;
+      if (currentMediaStream && currentMediaStream.active) {
+        console.log("RecorderPage: UNMOUNT cleanup - Stopping mediaStream tracks for ID:", currentMediaStream.id);
+        currentMediaStream.getTracks().forEach(track => track.stop());
+      }
+      if (currentRecordedVideoUrl && currentRecordedVideoUrl.startsWith('blob:')) {
+        console.log("RecorderPage: UNMOUNT cleanup - Revoking recordedVideoUrl:", currentRecordedVideoUrl);
+        URL.revokeObjectURL(currentRecordedVideoUrl);
+      }
+      currentPotentialThumbnails.forEach((url, index) => {
+        if (url && url.startsWith('blob:')) {
+          console.log(`RecorderPage: UNMOUNT cleanup - Revoking potentialThumbnail URL ${index}:`, url);
+          URL.revokeObjectURL(url);
+        }
+      });
+      if (currentTimer) {
+        clearInterval(currentTimer);
         console.log("RecorderPage: UNMOUNT cleanup - Cleared recording timer.");
       }
     };
-    // Depend on the memoized cleanup functions themselves.
-    // These functions should have stable dependencies (empty or primitive values).
-  }, [cleanupStream, cleanupRecordedVideo, cleanupThumbnails]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps 
+  }, []); // Empty dependency array ensures this runs only on unmount
 
 
   const getSupportedMimeType = () => {
@@ -223,7 +235,7 @@ export default function WebVideoRecorderPage() {
         recordingTimerRef.current = setInterval(() => {
           setRecordingDuration(prev => {
             if (prev + 1 >= MAX_RECORDING_MINUTES * 60) {
-              stopRecording();
+              stopRecording(); // Automatically stop if max duration is reached
             }
             return prev + 1;
           });
@@ -254,8 +266,7 @@ export default function WebVideoRecorderPage() {
             if (videoRef.current && videoRef.current.duration > 0 && Number.isFinite(videoRef.current.duration)) {
                 handleGenerateThumbnails(url, videoRef.current.duration);
             } else {
-                // Fallback if duration is still not available or invalid
-                const fallbackDuration = recordingDuration > 0 ? recordingDuration : 1; // Use JS timer if metadata fails
+                const fallbackDuration = recordingDuration > 0 ? recordingDuration : 1; 
                 console.warn(`Video metadata duration invalid, using JS timer: ${fallbackDuration}s`);
                 setError("Video duration unknown, using timer. Thumbnails might be affected.");
                 handleGenerateThumbnails(url, fallbackDuration); 
@@ -321,10 +332,9 @@ export default function WebVideoRecorderPage() {
             tempVideoElement.removeEventListener('seeked', onSeeked);
             tempVideoElement.removeEventListener('error', onError);
             tempVideoElement.removeEventListener('loadedmetadata', onLoadedMetadata);
-            tempVideoElement.removeEventListener('canplay', onCanPlay);
             tempVideoElement.src = ""; 
             tempVideoElement.removeAttribute('src'); 
-            tempVideoElement.load(); // Explicitly tell browser to release resources
+            tempVideoElement.load(); 
             tempVideoElement.remove();
             resolve(result);
         };
@@ -332,7 +342,7 @@ export default function WebVideoRecorderPage() {
         const timeoutId = setTimeout(() => {
           console.warn(`Thumbnail generation timed out for timestamp ${timestamp}`);
           cleanupAndResolve(null);
-        }, 7000); // 7 seconds timeout
+        }, 7000);
 
         const onSeeked = () => {
             if (resolved) return;
@@ -362,25 +372,15 @@ export default function WebVideoRecorderPage() {
         
         const onLoadedMetadata = () => {
             console.log("ThumbnailGen: Metadata loaded. Duration:", tempVideoElement.duration);
-            // Ensure seek time is valid and slightly offset from start/end
             const safeTimestamp = Math.max(0.01, Math.min(timestamp, tempVideoElement.duration > 0 ? tempVideoElement.duration - 0.01 : timestamp));
             tempVideoElement.currentTime = safeTimestamp;
-        };
-
-        const onCanPlay = () => { // Alternative trigger if seeked is unreliable on some browsers
-            console.log("ThumbnailGen: CanPlay event. CurrentTime:", tempVideoElement.currentTime);
-            if (!resolved && tempVideoElement.currentTime > 0 && Math.abs(tempVideoElement.currentTime - timestamp) < 0.5) { // Check if close to target
-               // onSeeked(); // Manually trigger if needed, or proceed if seeked is already registered
-            }
         };
 
         tempVideoElement.addEventListener('loadedmetadata', onLoadedMetadata);
         tempVideoElement.addEventListener('seeked', onSeeked);
         tempVideoElement.addEventListener('error', onError);
-        // tempVideoElement.addEventListener('canplay', onCanPlay); // Optional: for browsers where seeked might be tricky
-
         tempVideoElement.src = videoObjectUrl; 
-        tempVideoElement.load(); // Start loading metadata
+        tempVideoElement.load(); 
     });
   }, []);
 
@@ -388,7 +388,7 @@ export default function WebVideoRecorderPage() {
     console.log(`RecorderPage: handleGenerateThumbnails called. URL: ${videoObjectUrl ? 'valid' : 'invalid'}, Duration: ${duration}`);
     if (!videoObjectUrl || !duration || duration <= 0 || !Number.isFinite(duration)) {
       setError("Video not ready or duration is invalid for thumbnails."); 
-      setRecorderStep("review"); // Go back to review if generation can't start
+      setRecorderStep("review"); 
       return;
     }
     setRecorderStep("generatingThumbnails"); setIsProcessing(true);
@@ -439,7 +439,7 @@ export default function WebVideoRecorderPage() {
     const extension = recordedVideoBlob.type.split('/')[1]?.split(';')[0] || 'webm';
     a.download = `${safeTitle}_${Date.now()}.${extension}`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    if (!recordedVideoUrl || recordedVideoUrl !== urlToSave) { // If URL was created just for download
+    if (!recordedVideoUrl || recordedVideoUrl !== urlToSave) { 
         if (urlToSave.startsWith('blob:')) URL.revokeObjectURL(urlToSave); 
     }
     setIsLocallySaved(true);
@@ -491,7 +491,7 @@ export default function WebVideoRecorderPage() {
         tags: keywords.split(',').map(k => k.trim()).filter(Boolean),
         featured, storagePath: videoStoragePath, thumbnailStoragePath,
         videoSize: recordedVideoBlob.size, videoType: recordedVideoBlob.type,
-        createdAt: new Date().toISOString(), // Client-side, server action will use serverTimestamp
+        createdAt: new Date().toISOString(), 
         permalink: `/videos/${videoId}`, viewCount: 0, likeCount: 0, commentCount: 0, comments: []
       };
       
@@ -503,7 +503,7 @@ export default function WebVideoRecorderPage() {
     } catch (err) {
       console.error("RecorderPage: Upload to Firebase error:", err);
       setError(err instanceof Error ? err.message : "Upload failed. Please try again.");
-      setRecorderStep("thumbnailsReady"); // Revert to a step where user can retry or change details
+      setRecorderStep("thumbnailsReady"); 
     } finally { setIsProcessing(false); }
   };
   
@@ -519,7 +519,7 @@ export default function WebVideoRecorderPage() {
     }
     cleanupRecordedVideo(); 
     cleanupThumbnails();    
-    cleanupStream(); // Ensure old stream is fully stopped before trying to get a new one
+    cleanupStream(); 
 
     setIsLocallySaved(false);
     setTitle(''); setDescription(''); setKeywords(''); setFeatured(false);
@@ -527,7 +527,7 @@ export default function WebVideoRecorderPage() {
     setIsVideoPlaying(false); 
     setHasCameraPermission(null); 
     
-    setRecorderStep("initial"); // This will trigger the setup useEffect
+    setRecorderStep("initial"); 
     console.log("RecorderPage: resetRecorderInterface finished. Step set to 'initial'.");
   }, [cleanupRecordedVideo, cleanupThumbnails, cleanupStream, setRecorderStep]);
   
@@ -560,8 +560,8 @@ export default function WebVideoRecorderPage() {
   if (authLoading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-primary" /> <span className="ml-2">Loading Auth...</span></div>;
   if (!isAdmin && !authLoading) return <Alert variant="destructive"><AlertCircle /> <AlertTitle>Access Denied</AlertTitle><AlertDescription>You do not have permission to access this page.</AlertDescription></Alert>;
 
-  const canSaveLocally = recordedVideoBlob && title.trim() && selectedThumbnailIndex !== null && potentialThumbnails[selectedThumbnailIndex!] !== null;
-  const canUpload = recordedVideoBlob && title.trim() && selectedThumbnailIndex !== null && potentialThumbnails[selectedThumbnailIndex!] !== null && isLocallySaved;
+  const canSaveLocally = recordedVideoBlob && title.trim() && (selectedThumbnailIndex !== null && potentialThumbnails[selectedThumbnailIndex!] !== null || !potentialThumbnails.some(t => t) ); // Allow save if no thumbs generated too
+  const canUpload = recordedVideoBlob && title.trim() && (selectedThumbnailIndex !== null && potentialThumbnails[selectedThumbnailIndex!] !== null || !potentialThumbnails.some(t => t) ) && isLocallySaved;
 
   return (
     <div className="container mx-auto py-8">
@@ -633,7 +633,7 @@ export default function WebVideoRecorderPage() {
                     <button key={index} type="button" onClick={() => setSelectedThumbnailIndex(index)}
                       className={`relative aspect-video rounded-md overflow-hidden border-2 transition-all shadow-sm hover:opacity-80
                           ${selectedThumbnailIndex === index ? 'border-primary ring-2 ring-primary/50' : 'border-muted hover:border-primary/50'}`}>
-                      <NextImage src={thumbUrl} alt={`Thumbnail ${index + 1}`} fill sizes="100px" className="object-cover" data-ai-hint="video thumbnail select" />
+                      <NextImage src={thumbUrl} alt={`Thumbnail ${index + 1}`} fill sizes="100px" className="object-cover" data-ai-hint="video thumbnail selection" />
                       {selectedThumbnailIndex === index && <div className="absolute inset-0 bg-primary/60 flex items-center justify-center"><CheckCircle size={24} className="text-white"/></div>}
                     </button>
                   ) : (
@@ -665,11 +665,11 @@ export default function WebVideoRecorderPage() {
                 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                     <Button type="button" onClick={handleLocalSave} variant="outline" className="w-full gap-2 shadow-sm" 
-                            disabled={!recordedVideoBlob || (selectedThumbnailIndex === null && potentialThumbnails.some(t=>t)) || !title.trim() || isLocallySaved}>
+                            disabled={!canSaveLocally || isLocallySaved}>
                         <Download /> {isLocallySaved ? "Saved Locally" : "Save to Device"}
                     </Button>
                     <Button type="submit" form="web-video-upload-form" className="w-full gap-2 bg-primary hover:bg-primary/90 shadow-md" 
-                            disabled={!canUpload || (isProcessing && _recorderStep === "uploading") || !recordedVideoBlob || (selectedThumbnailIndex === null && potentialThumbnails.some(t=>t)) || !title.trim() }>
+                            disabled={!canUpload || (isProcessing && _recorderStep === "uploading") }>
                         {isProcessing && _recorderStep==="uploading" ? <Loader2 className="animate-spin"/> : <UploadCloud />} Upload to Firebase
                     </Button>
                 </div>
@@ -686,4 +686,6 @@ export default function WebVideoRecorderPage() {
     </div>
   );
 }
+    
+
     
