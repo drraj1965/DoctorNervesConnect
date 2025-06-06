@@ -29,37 +29,28 @@ export interface VideoComment {
 }
 
 export interface VideoMeta {
-  id: string;
+  id: string; // UUID v4
   title: string;
   description: string;
-  doctorId: string;
+  doctorId: string; // Firebase UID of the doctor
   doctorName: string;
-  videoUrl: string;
-  thumbnailUrl: string;
-  duration: string; // Formatted string e.g., "01:23" or "01:23:45"
+  videoUrl: string; // Download URL from Firebase Storage
+  thumbnailUrl: string; // Download URL from Firebase Storage
+  duration: string; // Formatted string e.g., "02:59"
   recordingDuration?: number; // Actual duration in seconds, as a number
   tags: string[];
-  createdAt: string; // ISO date string (or Firestore Timestamp on server, converted to string for client)
+  createdAt: string; // ISO date string (serverTimestamp on write, string on read)
   viewCount: number;
-  likeCount: number;
+  likeCount: number; // Not implemented yet, but good for future
   commentCount: number;
   featured: boolean; // To show in "Recent Activities"
-  permalink: string;
+  permalink: string; // e.g., /videos/{id}
   storagePath: string; // Full path in Firebase Storage for the video file
   thumbnailStoragePath: string; // Full path in Firebase Storage for the thumbnail
   videoSize?: number; // File size in bytes
-  videoType?: string; // Mime type e.g., "video/webm"
+  videoType?: string; // Mime type e.g., "video/mp4", "video/webm"
   comments?: VideoComment[];
 }
-
-// Type for data prepared by client (web recorder) before sending to server action
-// Omits fields that are purely server-set or derived during the save process.
-export type VideoDataForWebRecordCreation = Pick<VideoMeta, 
-  'id' | 'title' | 'description' | 'doctorId' | 'doctorName' | 
-  'videoUrl' | 'thumbnailUrl' | 'duration' | 'recordingDuration' | 
-  'tags' | 'featured' | 'storagePath' | 'thumbnailStoragePath' | 
-  'videoSize' | 'videoType'
->;
 
 
 export interface Article {
@@ -85,3 +76,4 @@ export interface Question {
   createdAt: string; // ISO date string
   answeredAt?: string; // ISO date string
 }
+

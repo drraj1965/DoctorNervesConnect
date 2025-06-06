@@ -9,7 +9,7 @@ import type { VideoMeta } from "@/types";
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 import { Skeleton } from '@/components/ui/skeleton';
-import { VideoIcon, Star } from 'lucide-react'; // Added Star for featured
+import { VideoIcon, Star } from 'lucide-react';
 
 export default function RecentActivityFeed() {
   const [recentVideos, setRecentVideos] = useState<VideoMeta[]>([]);
@@ -19,11 +19,16 @@ export default function RecentActivityFeed() {
     const fetchRecentVideos = async () => {
       setLoading(true);
       try {
-        // Fetch featured videos uploaded in the last 7 days, limit to 5
-        const videos = await getRecentVideos(7, 5, true); // featuredOnly = true
+        // Fetch featured videos uploaded, limit to 5
+        // The `days` parameter for getRecentVideos is effectively ignored if featuredOnly=true,
+        // as we want all featured videos sorted by recent creation.
+        // Or, if we want featured AND recent, we keep the days param.
+        // For "Recent Activity" showing featured items, it's typical to show *any* featured item, ordered by recency.
+        // If strictly "featured in last 7 days", then: getRecentVideos(7, 5, true)
+        const videos = await getRecentVideos(365, 5, true); // Show featured from last year, limit 5
         setRecentVideos(videos);
       } catch (error) {
-        console.error("Failed to fetch recent videos:", error);
+        console.error("Failed to fetch recent videos for feed:", error);
       } finally {
         setLoading(false);
       }
@@ -36,7 +41,7 @@ export default function RecentActivityFeed() {
     <Card className="shadow-lg rounded-lg">
       <CardHeader>
         <CardTitle className="text-xl font-headline">Recent Activity</CardTitle>
-        <CardDescription>Featured videos uploaded in the last 7 days.</CardDescription>
+        <CardDescription>Featured videos recently added.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {loading && (
@@ -53,7 +58,7 @@ export default function RecentActivityFeed() {
           </>
         )}
         {!loading && recentVideos.length === 0 && (
-          <p className="text-sm text-muted-foreground p-2">No featured video activity in the last 7 days.</p>
+          <p className="text-sm text-muted-foreground p-2">No new featured videos at the moment.</p>
         )}
         {!loading && recentVideos.map((video) => (
           <Link href={video.permalink || `/videos/${video.id}`} key={video.id} className="flex items-start space-x-3 group p-2 rounded-md hover:bg-muted/30 dark:hover:bg-muted/10 transition-colors">
@@ -68,10 +73,10 @@ export default function RecentActivityFeed() {
                 <p className="font-medium text-sm group-hover:text-primary transition-colors line-clamp-2 leading-tight">
                   {video.title}
                 </p>
-                {video.featured && <Star size={14} className="text-accent fill-accent flex-shrink-0 ml-2" />}
+                {video.featured && <Star size={14} className="text-accent fill-accent flex-shrink-0 ml-2" title="Featured" />}
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
-                By {video.doctorName} • {formatDistanceToNow(new Date(video.createdAt), { addSuffix: true })}
+                By {video.doctorName} • {video.createdAt ? formatDistanceToNow(new Date(video.createdAt), { addSuffix: true }) : 'Date unknown'}
               </p>
             </div>
           </Link>

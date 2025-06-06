@@ -30,7 +30,6 @@ export async function saveVideoMetadataAction(videoData: VideoMeta): Promise<{ s
       const doctorProfile = doctorDocSnap.data() as DoctorProfile;
       if (!doctorProfile.isAdmin) {
          console.warn(`[WebRecordAction:saveVideoMetadata] Doctor ${dataToSave.doctorId} is NOT an admin. isAdmin: ${doctorProfile.isAdmin}`);
-         // Firestore rules should ultimately enforce this, but this is a server-side log.
       } else {
         console.log(`[WebRecordAction:saveVideoMetadata] Doctor ${dataToSave.doctorId} is an admin.`);
       }
@@ -45,12 +44,12 @@ export async function saveVideoMetadataAction(videoData: VideoMeta): Promise<{ s
   try {
     const videoDocRef = doc(db, "videos", videoId);
 
+    // Ensure serverTimestamp is used for createdAt
     const finalData: VideoMeta = {
       ...dataToSave,
-      id: videoId, // Ensure the id from path is used in the document
+      id: videoId, 
       createdAt: serverTimestamp() as any, // Firestore will convert this
       permalink: `/videos/${videoId}`, // Ensure permalink is consistent
-      // Ensure all required fields from VideoMeta are present or have defaults
       viewCount: dataToSave.viewCount || 0,
       likeCount: dataToSave.likeCount || 0,
       commentCount: dataToSave.commentCount || 0,
@@ -67,7 +66,7 @@ export async function saveVideoMetadataAction(videoData: VideoMeta): Promise<{ s
     revalidatePath('/videos');
     revalidatePath(`/videos/${videoId}`);
     revalidatePath('/admin/manage-content');
-    revalidatePath('/admin/recorder'); // The current page
+    revalidatePath('/admin/recorder');
 
     return { success: true, videoId: videoId };
   } catch (error: any) {
@@ -81,3 +80,4 @@ export async function saveVideoMetadataAction(videoData: VideoMeta): Promise<{ s
     return { success: false, error: errorMessage };
   }
 }
+

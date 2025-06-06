@@ -28,17 +28,23 @@ const getSafeCreatedAtISO = (createdAtValue: any): string => {
   }
   if (typeof createdAtValue === 'string') {
     try {
-      return new Date(createdAtValue).toISOString();
+      const date = new Date(createdAtValue);
+      if (isNaN(date.getTime())) { // Check if date is invalid
+        return new Date().toISOString(); // Fallback for invalid date string
+      }
+      return date.toISOString();
     } catch (e) {
       return new Date().toISOString();
     }
   }
   if (createdAtValue && typeof createdAtValue === 'object' && 'seconds' in createdAtValue && 'nanoseconds' in createdAtValue) {
+    // This handles Firestore Timestamp-like objects that might come from direct data reads not auto-converted
     return new Timestamp(createdAtValue.seconds, createdAtValue.nanoseconds).toDate().toISOString();
   }
   if (createdAtValue instanceof Date) {
     return createdAtValue.toISOString();
   }
+  console.warn("getSafeCreatedAtISO: Unhandled createdAtValue type, returning current date.", typeof createdAtValue, createdAtValue);
   return new Date().toISOString(); 
 };
 
@@ -62,9 +68,12 @@ export const addVideoMetadata = async (videoData: Omit<VideoMeta, 'id' | 'create
 export const updateVideoMetadata = async (videoId: string, dataToUpdate: Partial<VideoMeta>): Promise<void> => {
   try {
     const videoDocRef = doc(db, "videos", videoId);
-    const { createdAt, ...restOfData } = dataToUpdate;
+    const { createdAt, ...restOfData } = dataToUpdate; // Exclude createdAt from client-side updates if it exists
     let updatePayload: any = restOfData;
     
+    // If other specific server-generated fields need protection, handle them here
+    // e.g., delete updatePayload.serverOnlyField;
+
     await updateDoc(videoDocRef, updatePayload);
   } catch (error) {
     console.error("Error updating video metadata: ", error);
@@ -80,11 +89,10 @@ export const getVideosCount = async (): Promise<number> => {
     return snapshot.data().count;
   } catch (error) {
     console.error("Error getting videos count: ", error);
-    return 0;
+    return 0; // Return 0 on error
   }
 };
 
-// Updated to fetch featured videos for RecentActivityFeed
 export const getRecentVideos = async (days: number = 7, countLimit: number = 5, featuredOnly: boolean = false): Promise<VideoMeta[]> => {
   try {
     const videosCollection = collection(db, "videos");
@@ -97,7 +105,7 @@ export const getRecentVideos = async (days: number = 7, countLimit: number = 5, 
       q = query(
         videosCollection,
         where("featured", "==", true),
-        where("createdAt", ">=", referenceTimestamp), // Ensure it's also recent if days constraint applies
+        // where("createdAt", ">=", referenceTimestamp), // Optional: ensure featured are also recent
         orderBy("createdAt", "desc"),
         limit(countLimit)
       );
@@ -117,8 +125,8 @@ export const getRecentVideos = async (days: number = 7, countLimit: number = 5, 
       videos.push({ 
         id: docSnap.id,
         ...data,
-        createdAt: getSafeCreatedAtISO(data.createdAt),
-        comments: data.comments || [],
+        createdAt: getSafeCreatedAtISO(data.createdAt), // Ensure createdAt is a string
+        comments: data.comments || [], // Ensure comments is an array
        } as VideoMeta);
     });
     return videos;
@@ -139,8 +147,8 @@ export const getAllVideos = async (): Promise<VideoMeta[]> => {
       videos.push({ 
         id: docSnap.id,
         ...data,
-        createdAt: getSafeCreatedAtISO(data.createdAt),
-        comments: data.comments || [],
+        createdAt: getSafeCreatedAtISO(data.createdAt), // Ensure createdAt is a string
+        comments: data.comments || [], // Ensure comments is an array
        } as VideoMeta);
     });
     return videos;
@@ -159,8 +167,8 @@ export const getVideoById = async (id: string): Promise<VideoMeta | null> => {
       return { 
         id: docSnap.id, 
         ...data,
-        createdAt: getSafeCreatedAtISO(data.createdAt),
-        comments: data.comments || [],
+        createdAt: getSafeCreatedAtISO(data.createdAt), // Ensure createdAt is a string
+        comments: data.comments || [], // Ensure comments is an array
       } as VideoMeta;
     }
     return null;
@@ -189,3 +197,4 @@ export const deleteVideoDocument = async (videoId: string): Promise<void> => {
   const videoDocRef = doc(db, "videos", videoId);
   await deleteDoc(videoDocRef);
 };
+
