@@ -49,7 +49,6 @@ const nextConfig = {
     ],
   },
   webpack: (config, { isServer }) => {
-    // If you have other webpack customizations, keep them.
     // FFmpeg externals removed as FFmpeg is no longer used.
     return config;
   },
