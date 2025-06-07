@@ -1,22 +1,42 @@
-// server/firebase-admin.ts
+// src/server/firebase-admin.ts
+
 import { initializeApp, cert, getApps, App } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import path from "path";
-import { readFileSync } from "fs";
+import fs from "fs";
 
-const serviceAccountPath = path.join(
-  __dirname,
-  "secrets",
-  "serviceAccountKey.json"
-);
+let app: App | undefined;
+let db: FirebaseFirestore.Firestore | undefined;
 
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, "utf8"));
+function getServiceAccount() {
+  const serviceAccountPath = path.resolve(
+    process.cwd(),
+    "server",
+    "secrets",
+    "serviceAccountKey.json"
+  );
 
-const app: App =
-  getApps().length === 0
-    ? initializeApp({
-        credential: cert(serviceAccount),
-      })
-    : getApps()[0];
+  if (!fs.existsSync(serviceAccountPath)) {
+    throw new Error(
+      `❌ Firebase service account key not found at ${serviceAccountPath}`
+    );
+  }
 
-export const db = getFirestore(app);
+  const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
+  return serviceAccount;
+}
+
+export function getDb(): FirebaseFirestore.Firestore {
+  if (!app || !db) {
+    const serviceAccount = getServiceAccount();
+    app =
+      getApps().length === 0
+        ? initializeApp({
+            credential: cert(serviceAccount),
+          })
+        : getApps()[0];
+    db = getFirestore(app);
+  }
+
+  return db;
+}

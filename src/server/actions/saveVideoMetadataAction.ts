@@ -1,6 +1,7 @@
 // studio/server/actions/saveVideoMetadataAction.ts
 
-import { db } from "@/server/firebase-admin";
+import { getDb } from "@/server/firebase-admin";
+const db = getDb();
 import { Timestamp } from "firebase-admin/firestore";
 import { VideoMeta } from "@/types/video"; // Adjust path as needed
 

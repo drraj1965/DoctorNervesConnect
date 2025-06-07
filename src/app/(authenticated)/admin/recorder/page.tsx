@@ -205,9 +205,11 @@ export default function WebVideoRecorderPage() {
   // Unmount cleanup effect - runs only once when component unmounts
   useEffect(() => {
     console.log("RecorderPage: Unmount effect registered.");
+    // Capture initial values of refs for cleanup, as they might change if component has a fast remount.
     const videoRefCurrent = videoRef.current;
     const mediaStreamRefCurrent = mediaStreamRef.current;
     const recordingTimerRefCurrent = recordingTimerRef.current;
+    // Capture state values that might be needed for cleanup (e.g., blob URLs)
     const currentRecordedVideoUrl = recordedVideoUrl;
     const currentPotentialThumbnails = [...potentialThumbnails];
 
@@ -215,6 +217,7 @@ export default function WebVideoRecorderPage() {
     return () => {
       console.log("RecorderPage: Component UNMOUNTING - Attempting cleanup. Current step:", recorderStepRef.current);
 
+      // CRITICAL FIX: Only stop the media stream if not actively recording.
       if (recorderStepRef.current !== "recording") {
         if (mediaStreamRefCurrent && mediaStreamRefCurrent.active) {
           console.log("RecorderPage: UNMOUNT cleanup - Stopping mediaStream tracks for ID:", mediaStreamRefCurrent.id);
@@ -359,8 +362,8 @@ export default function WebVideoRecorderPage() {
 
         if (videoRef.current) {
           videoRef.current.oncanplay = null; 
-          videoRef.current.onerror = null;
-          videoRef.current.srcObject = null; // Detach live stream (original one)
+          videoRef.current.onerror = null; // Clear previous error handler
+          videoRef.current.srcObject = null; // IMPORTANT: Detach live stream (original one)
           videoRef.current.src = url; // Set recorded video as source
           videoRef.current.muted = false;
           videoRef.current.controls = true; 
@@ -370,19 +373,20 @@ export default function WebVideoRecorderPage() {
                 handleGenerateThumbnails(url, videoRef.current.duration);
             } else {
                 const fallbackDuration = recordingDuration > 0 ? recordingDuration : 1; 
-                console.warn(`RecorderPage: Recorded video duration invalid. Fallback: ${fallbackDuration}s`);
+                console.warn(`RecorderPage: Recorded video duration invalid from element. Fallback to timer: ${fallbackDuration}s`);
                 handleGenerateThumbnails(url, fallbackDuration); 
             }
           };
            videoRef.current.onerror = (e) => {
             console.error("RecorderPage: Error loading recorded video for preview:", e, videoRef.current?.error);
-            setError("Failed to load recorded video for preview. File might be corrupted.");
+            setError(`Failed to load recorded video for preview. Error: ${videoRef.current?.error?.message || 'Unknown media error'}. The element has no supported sources.`);
             if (blob.size > 0) {
               const fallbackDuration = recordingDuration > 0 ? recordingDuration : 1;
-              handleGenerateThumbnails(url, fallbackDuration);
+              handleGenerateThumbnails(url, fallbackDuration); // Still try to generate thumbnails
             }
           }
-          videoRef.current.load(); 
+          console.log("RecorderPage: Calling videoRef.current.load() for recorded video.");
+          videoRef.current.load(); // IMPORTANT: Load the new source
           videoRef.current.play().catch(playError => console.warn("Error auto-playing recorded video:", playError));
         }
       };
@@ -393,7 +397,7 @@ export default function WebVideoRecorderPage() {
         streamForRecorder.getTracks().forEach(track => track.stop()); // Stop cloned stream tracks on error too
         setRecorderStep("readyToRecord"); 
       }
-      recorder.start(1000); 
+      recorder.start(1000); // Fire ondataavailable every second
       console.log("RecorderPage: MediaRecorder.start(1000) called with cloned stream.");
     } catch (e) { 
       console.error("RecorderPage: Failed to start MediaRecorder:", e);
@@ -809,4 +813,3 @@ export default function WebVideoRecorderPage() {
     </div>
   );
 }
-
