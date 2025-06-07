@@ -1,57 +1,54 @@
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  /* config options here */
   typescript: {
     ignoreBuildErrors: true,
   },
   eslint: {
     ignoreDuringBuilds: true,
   },
+  experimental: {
+    // Remove the error: Must be object, not boolean
+    serverActions: {},
+    allowedDevOrigins: [
+      "http://localhost:9003",
+      "https://9003-firebase-studio-*.cloudworkstations.dev"
+    ]
+  },
   images: {
     remotePatterns: [
       {
-        protocol: 'https',
-        hostname: 'placehold.co',
-        port: '',
-        pathname: '/**',
+        protocol: "https",
+        hostname: "placehold.co",
+        pathname: "/**",
       },
       {
-        protocol: 'https',
-        hostname: 'firebasestorage.googleapis.com', 
-        port: '',
-        pathname: '/**',
+        protocol: "https",
+        hostname: "firebasestorage.googleapis.com",
+        pathname: "/**",
       },
       {
-        protocol: 'https',
-        hostname: 'doctornerves.firebasestorage.app', 
-        port: '',
-        pathname: '/**',
+        protocol: "https",
+        hostname: "doctornerves.firebasestorage.app",
+        pathname: "/**",
       },
       {
-        protocol: 'https',
-        hostname: 'storage.googleapis.com', 
-        port: '',
-        pathname: '/**', 
+        protocol: "https",
+        hostname: "storage.googleapis.com",
+        pathname: "/**",
       },
       {
-        protocol: 'http', 
-        hostname: 'c5ca8427-cd2b-4dd8-a4b4-f2d181791ac5-00-q34w2hbrdndv.spock.replit.dev',
-        port: '',
-        pathname: '/**',
+        protocol: "http",
+        hostname: "*.replit.dev",
+        pathname: "/**",
       },
       {
-        protocol: 'https',
-        hostname: 'i.ytimg.com', 
-        port: '',
-        pathname: '/**',
+        protocol: "https",
+        hostname: "i.ytimg.com",
+        pathname: "/**",
       },
     ],
   },
-  webpack: (config, { isServer }) => {
-    // FFmpeg externals removed as FFmpeg is no longer used.
-    return config;
-  },
+  webpack: (config) => config,
 };
 
 module.exports = nextConfig;
