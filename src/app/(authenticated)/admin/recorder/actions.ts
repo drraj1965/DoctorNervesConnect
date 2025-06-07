@@ -1,98 +1,64 @@
 
 "use server";
 
-import { db } from "@/lib/firebase/config";
-import { doc, setDoc, serverTimestamp, getDoc } from "firebase/firestore";
-import type { VideoMeta, DoctorProfile } from "@/types";
+// This file previously contained direct Firestore writes.
+// Now, it will call the backend API route.
+// Note: The name saveVideoMetadataAction matches the function in the prompt.
+// The VideoMeta type should be imported if not already.
+import type { VideoMeta } from "@/types";
 import { revalidatePath } from "next/cache";
 
 // This action is specifically for videos recorded via the web interface
-export async function saveVideoMetadataAction(videoData: VideoMeta): Promise<{ success: boolean; videoId?: string; error?: string }> {
-  const { id: videoId, ...dataToSave } = videoData;
-
-  console.log("[WebRecordAction:saveVideoMetadata] Received videoId:", videoId);
-  console.log("[WebRecordAction:saveVideoMetadata] Raw dataToSave from client:", JSON.stringify(dataToSave, null, 2));
-
-
-  if (!videoId || typeof videoId !== 'string' || videoId.trim() === '') {
-    const errorMsg = "Invalid videoId received. Cannot save metadata.";
-    console.error(`[WebRecordAction:saveVideoMetadata] ${errorMsg}`);
-    return { success: false, error: errorMsg };
-  }
-  if (!dataToSave.doctorId) {
-    console.error("[WebRecordAction:saveVideoMetadata] No doctorId provided in videoData.");
-    return { success: false, error: "Doctor ID is missing. Cannot save metadata." };
-  }
-  
+// It now calls the backend API.
+export async function saveVideoMetadataAction(metadata: VideoMeta): Promise<{ success: boolean; videoId?: string; error?: string }> {
+  console.log("[WebRecordAction:saveVideoMetadata API Call] Attempting to save metadata for ID:", metadata.id);
   try {
-    const doctorDocRef = doc(db, "doctors", dataToSave.doctorId);
-    const doctorDocSnap = await getDoc(doctorDocRef);
-    if (doctorDocSnap.exists()) {
-      const doctorProfile = doctorDocSnap.data() as DoctorProfile;
-      if (!doctorProfile.isAdmin) {
-         console.warn(`[WebRecordAction:saveVideoMetadata] Doctor ${dataToSave.doctorId} is NOT an admin based on Firestore doc. isAdmin: ${doctorProfile.isAdmin}`);
-      } else {
-        console.log(`[WebRecordAction:saveVideoMetadata] Doctor ${dataToSave.doctorId} is an admin based on Firestore doc.`);
-      }
-    } else {
-        console.warn(`[WebRecordAction:saveVideoMetadata] Doctor profile for ${dataToSave.doctorId} not found in 'doctors' collection.`);
+    // The API route expects the client to generate the videoId (UUID)
+    // and include it in the metadata payload.
+    if (!metadata.id) {
+      console.error("[WebRecordAction:saveVideoMetadata API Call] Error: Video ID is missing in metadata payload.");
+      return { success: false, error: "Video ID is missing." };
     }
-  } catch (profileError) {
-    console.error(`[WebRecordAction:saveVideoMetadata] Error fetching doctor profile:`, profileError);
-  }
+    
+    // Ensure permalink is set if not already (API might also do this, but good practice)
+    if (!metadata.permalink) {
+      metadata.permalink = `/videos/${metadata.id}`;
+    }
+    
+    // The API route will handle setting its own server-side `createdAt` timestamp.
+    // We can remove it from the client-sent payload or the API will overwrite it.
+    // For simplicity, let's assume the API overwrites `createdAt`.
 
+    console.log("[WebRecordAction:saveVideoMetadata API Call] Sending metadata to API:", JSON.stringify(metadata, null, 2));
 
-  try {
-    const videoDocRef = doc(db, "videos", videoId);
+    const response = await fetch("/api/save-video-metadata", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(metadata), // Send the full VideoMeta object
+    });
 
-    // Ensure all fields required by Firestore rules (isValidVideo) are present and correctly typed.
-    const finalData: VideoMeta = {
-      id: videoId,
-      title: typeof dataToSave.title === 'string' ? dataToSave.title : "Untitled Video",
-      description: typeof dataToSave.description === 'string' ? dataToSave.description : "",
-      doctorId: dataToSave.doctorId, // This MUST match request.auth.uid for the rule
-      doctorName: typeof dataToSave.doctorName === 'string' ? dataToSave.doctorName : "Unknown Doctor",
-      videoUrl: typeof dataToSave.videoUrl === 'string' ? dataToSave.videoUrl : "",
-      thumbnailUrl: typeof dataToSave.thumbnailUrl === 'string' ? dataToSave.thumbnailUrl : "",
-      duration: typeof dataToSave.duration === 'string' ? dataToSave.duration : "00:00",
-      tags: Array.isArray(dataToSave.tags) ? dataToSave.tags : [],
-      createdAt: serverTimestamp() as any, // Firestore will convert this
-      viewCount: typeof dataToSave.viewCount === 'number' ? dataToSave.viewCount : 0,
-      likeCount: typeof dataToSave.likeCount === 'number' ? dataToSave.likeCount : 0,
-      commentCount: typeof dataToSave.commentCount === 'number' ? dataToSave.commentCount : 0,
-      featured: typeof dataToSave.featured === 'boolean' ? dataToSave.featured : false,
-      permalink: `/videos/${videoId}`, // Server-generated based on videoId
-      storagePath: typeof dataToSave.storagePath === 'string' ? dataToSave.storagePath : "",
-      thumbnailStoragePath: typeof dataToSave.thumbnailStoragePath === 'string' ? dataToSave.thumbnailStoragePath : "",
-      videoSize: typeof dataToSave.videoSize === 'number' ? dataToSave.videoSize : 0,
-      videoType: typeof dataToSave.videoType === 'string' && dataToSave.videoType.trim() !== '' ? dataToSave.videoType : "video/unknown",
-      comments: Array.isArray(dataToSave.comments) ? dataToSave.comments : [],
-      // recordingDuration is optional in VideoMeta type and not checked by isValidVideo,
-      // but include it if provided and valid.
-      ...(typeof dataToSave.recordingDuration === 'number' && { recordingDuration: dataToSave.recordingDuration }),
-    };
+    const responseData = await response.json();
 
-    console.log("[WebRecordAction:saveVideoMetadata] FINAL data object for Firestore setDoc:", JSON.stringify(finalData, null, 2));
-
-    await setDoc(videoDocRef, finalData);
-    console.log("[WebRecordAction:saveVideoMetadata] Successfully set document in Firestore for videoId:", videoId);
+    if (!response.ok) {
+      console.error("[WebRecordAction:saveVideoMetadata API Call] API Error Response:", responseData);
+      throw new Error(responseData.error || `API request failed with status ${response.status}`);
+    }
+    
+    console.log("[WebRecordAction:saveVideoMetadata API Call] Successfully saved via API for videoId:", responseData.id);
 
     revalidatePath('/dashboard');
     revalidatePath('/admin/dashboard');
     revalidatePath('/videos');
-    revalidatePath(`/videos/${videoId}`);
+    revalidatePath(`/videos/${metadata.id}`); // Use ID from original metadata for revalidation path
     revalidatePath('/admin/manage-content');
     revalidatePath('/admin/recorder');
 
-    return { success: true, videoId: videoId };
+
+    return { success: true, videoId: responseData.id };
   } catch (error: any) {
-    console.error("[WebRecordAction:saveVideoMetadata] CRITICAL ERROR saving video metadata for videoId:", videoId, error);
-    let errorMessage = "Unknown error saving video metadata";
-     if (error.code === 'permission-denied' || (error.message && error.message.includes("PERMISSION_DENIED"))) {
-      errorMessage = `Firestore save error: PERMISSION_DENIED. Check Firestore rules. (Code: ${error.code || 'permission-denied'})`;
-    } else if (error instanceof Error) {
-      errorMessage = error.message;
-    }
-    return { success: false, error: errorMessage };
+    console.error("[WebRecordAction:saveVideoMetadata API Call] Client Error saving metadata:", error);
+    return { success: false, error: error.message || "Unknown error saving video metadata via API." };
   }
 }
