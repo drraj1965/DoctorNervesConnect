@@ -3,8 +3,6 @@
 
 // This file previously contained direct Firestore writes.
 // Now, it will call the backend API route.
-// Note: The name saveVideoMetadataAction matches the function in the prompt.
-// The VideoMeta type should be imported if not already.
 import type { VideoMeta } from "@/types";
 import { revalidatePath } from "next/cache";
 
@@ -25,13 +23,23 @@ export async function saveVideoMetadataAction(metadata: VideoMeta): Promise<{ su
       metadata.permalink = `/videos/${metadata.id}`;
     }
     
-    // The API route will handle setting its own server-side `createdAt` timestamp.
-    // We can remove it from the client-sent payload or the API will overwrite it.
-    // For simplicity, let's assume the API overwrites `createdAt`.
+    let url: string;
 
-    console.log("[WebRecordAction:saveVideoMetadata API Call] Sending metadata to API:", JSON.stringify(metadata, null, 2));
+    if (typeof window !== "undefined" && window?.location?.origin?.startsWith("http")) {
+      url = `${window.location.origin}/api/save-video-metadata`;
+    } else {
+      // Fallback for SSR or environments where window.location.origin might not be a full HTTP/HTTPS URL
+      // In Firebase Studio/Cloud Workstations, this often needs to be an explicit localhost or service URL.
+      // Assuming the Next.js app runs on port 3000 internally in the workstation.
+      url = "http://localhost:3000/api/save-video-metadata"; 
+      console.warn(`[WebRecordAction:saveVideoMetadata API Call] window.location.origin not suitable or available. Using fallback URL: ${url}`);
+    }
 
-    const response = await fetch("/api/save-video-metadata", {
+    console.log("[WebRecordAction:saveVideoMetadata API Call] Calling API with URL:", url);
+    console.log("[WebRecordAction:saveVideoMetadata API Call] Payload to be sent:", JSON.stringify(metadata, null, 2));
+
+
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -62,3 +70,4 @@ export async function saveVideoMetadataAction(metadata: VideoMeta): Promise<{ su
     return { success: false, error: error.message || "Unknown error saving video metadata via API." };
   }
 }
+
