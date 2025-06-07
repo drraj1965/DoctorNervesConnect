@@ -87,7 +87,7 @@ export default function WebVideoRecorderPage() {
     mediaStreamRef.current = null; 
     _setMediaStreamInternal(null); 
     console.log("RecorderPage: cleanupStream - mediaStream ref and state set to null.");
-  }, []);
+  }, [_setMediaStreamInternal]);
 
 
   const cleanupRecordedVideo = useCallback(() => {
@@ -183,58 +183,70 @@ export default function WebVideoRecorderPage() {
 
   // Main setup effect for initial permission request
   useEffect(() => {
-    console.log(`RecorderPage: Main Setup Effect - authLoading: ${authLoading}, isAdmin: ${isAdmin}, currentStep: ${recorderStepRef.current}`);
+    console.log(`RecorderPage: Setup Effect Triggered - authLoading: ${authLoading}, isAdmin: ${isAdmin}, recorderStep: ${_recorderStep}, mediaStream active: ${mediaStreamRef.current?.active}`);
     if (!authLoading && isAdmin) {
-      if (recorderStepRef.current === "initial" || recorderStepRef.current === "permissionDenied") {
-        console.log(`RecorderPage: Main Setup Effect - Conditions met for setup. Calling requestPermissionsAndSetup.`);
+      if (_recorderStep === "initial" || _recorderStep === "permissionDenied") {
+        console.log(`RecorderPage: Setup Effect - No active stream or explicit permission retry. Calling requestPermissionsAndSetup for step: ${_recorderStep}`);
         requestPermissionsAndSetup();
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, isAdmin]); // Dependencies: authLoading, isAdmin. requestPermissionsAndSetup is stable.
+  }, [authLoading, isAdmin, _recorderStep]); // requestPermissionsAndSetup is stable due to useCallback
 
-  // Unmount cleanup effect
+  // Unmount cleanup effect - runs only once when component unmounts
   useEffect(() => {
+    console.log("RecorderPage: Unmount effect registered.");
+    const currentVideoRef = videoRef.current; // Capture ref for cleanup
+    const currentRecordedVideoUrl = recordedVideoUrl; // Capture state for cleanup
+    const currentPotentialThumbnails = [...potentialThumbnails]; // Capture state for cleanup
+    const currentRecordingTimerRef = recordingTimerRef.current;
+
     return () => {
-      console.log("RecorderPage: Component UNMOUNTING - Performing cleanup.");
-      if (mediaStreamRef.current && mediaStreamRef.current.active) {
-        console.log("RecorderPage: UNMOUNT cleanup - Stopping mediaStream tracks for ID:", mediaStreamRef.current.id);
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      console.log("RecorderPage: Component UNMOUNTING - Attempting cleanup. Current step:", recorderStepRef.current);
+
+      // Only stop the media stream if not actively recording.
+      // If recording was just stopped, onstop handles the stream.
+      if (recorderStepRef.current !== "recording") {
+        if (mediaStreamRef.current && mediaStreamRef.current.active) {
+          console.log("RecorderPage: UNMOUNT cleanup - Stopping mediaStream tracks for ID:", mediaStreamRef.current.id);
+          mediaStreamRef.current.getTracks().forEach(track => track.stop());
+        }
+        // No need to call _setMediaStreamInternal here as the component is unmounting
+      } else {
+        console.warn("RecorderPage: UNMOUNT cleanup - Skipped stopping mediaStream because recording is (or was just) in progress.");
       }
-      mediaStreamRef.current = null;
-       _setMediaStreamInternal(null);
+      mediaStreamRef.current = null; // Always nullify ref on unmount
 
-
-      if (recordedVideoUrl && recordedVideoUrl.startsWith('blob:')) {
-        console.log("RecorderPage: UNMOUNT cleanup - Revoking recordedVideoUrl:", recordedVideoUrl);
-        URL.revokeObjectURL(recordedVideoUrl);
+      if (currentRecordedVideoUrl && currentRecordedVideoUrl.startsWith('blob:')) {
+        console.log("RecorderPage: UNMOUNT cleanup - Revoking recordedVideoUrl:", currentRecordedVideoUrl);
+        URL.revokeObjectURL(currentRecordedVideoUrl);
       }
 
-      potentialThumbnails.forEach((url, index) => {
+      currentPotentialThumbnails.forEach((url, index) => {
         if (url && url.startsWith('blob:')) {
           console.log(`RecorderPage: UNMOUNT cleanup - Revoking potentialThumbnail blob URL ${index}:`, url);
           URL.revokeObjectURL(url);
         }
       });
       
-      if (recordingTimerRef.current) {
-        clearInterval(recordingTimerRef.current);
-        recordingTimerRef.current = null;
+      if (currentRecordingTimerRef) {
+        clearInterval(currentRecordingTimerRef);
         console.log("RecorderPage: UNMOUNT cleanup - Cleared recording timer.");
       }
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
-        videoRef.current.src = "";
-        videoRef.current.oncanplay = null;
-        videoRef.current.onerror = null;
-        videoRef.current.onloadedmetadata = null;
-        videoRef.current.load(); 
+      // No need to set recordingTimerRef.current = null as it's a ref tied to this instance.
+
+      if (currentVideoRef) {
+        currentVideoRef.srcObject = null;
+        currentVideoRef.src = "";
+        currentVideoRef.oncanplay = null;
+        currentVideoRef.onerror = null;
+        currentVideoRef.onloadedmetadata = null;
+        currentVideoRef.load(); 
         console.log("RecorderPage: UNMOUNT cleanup - Cleared videoRef element.");
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recordedVideoUrl, potentialThumbnails]);
-
+  }, []); // Empty dependency array means this cleanup runs ONLY on unmount.
 
   const getSupportedMimeType = () => {
     const types = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
@@ -253,10 +265,12 @@ export default function WebVideoRecorderPage() {
       }
       return;
     }
-    if (videoRef.current && videoRef.current.srcObject !== mediaStreamRef.current) { 
-        console.log("RecorderPage: startRecording - Live preview srcObject mismatch. Re-assigning.");
+    if (videoRef.current) { 
+        console.log("RecorderPage: startRecording - Configuring videoRef for live preview.");
         videoRef.current.srcObject = mediaStreamRef.current;
+        videoRef.current.src = ""; // Ensure no blob URL is playing
         videoRef.current.muted = true; 
+        videoRef.current.controls = false;
         videoRef.current.play().catch(e => console.warn("Error re-playing live preview for recording start:", e));
     }
     cleanupRecordedVideo(); cleanupThumbnails(); setIsLocallySaved(false);
@@ -296,7 +310,7 @@ export default function WebVideoRecorderPage() {
         console.log("RecorderPage: MediaRecorder onstop. Chunks collected:", recordedChunksRef.current.length);
         if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
         if (recordedChunksRef.current.length === 0) {
-          console.warn("RecorderPage: No video data in recordedChunksRef.current after stop.");
+          console.warn("RecorderPage: No video data recorded.");
           setError("No video data recorded. Try again. Ensure camera is not covered and mic is working."); 
           setRecorderStep("readyToRecord"); return;
         }
@@ -317,8 +331,8 @@ export default function WebVideoRecorderPage() {
         if (videoRef.current) {
           videoRef.current.oncanplay = null; 
           videoRef.current.onerror = null;
-          videoRef.current.srcObject = null; 
-          videoRef.current.src = url;
+          videoRef.current.srcObject = null; // Detach live stream
+          videoRef.current.src = url; // Set recorded video as source
           videoRef.current.muted = false;
           videoRef.current.controls = true; 
           videoRef.current.onloadedmetadata = () => { 
@@ -339,7 +353,8 @@ export default function WebVideoRecorderPage() {
               handleGenerateThumbnails(url, fallbackDuration);
             }
           }
-          videoRef.current.load(); 
+          videoRef.current.load(); // Important to load the new src
+          videoRef.current.play().catch(playError => console.warn("Error auto-playing recorded video:", playError));
         }
       };
       recorder.onerror = (event) => { 
@@ -361,15 +376,15 @@ export default function WebVideoRecorderPage() {
     console.log("RecorderPage: stopRecording called.");
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       console.log("RecorderPage: MediaRecorder is recording, calling stop().");
-      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stop(); // This will trigger 'onstop'
     } else {
       console.log("RecorderPage: MediaRecorder not recording or ref is null. State:", mediaRecorderRef.current?.state);
-       if (recordingTimerRef.current) { // Ensure timer is cleared even if recorder wasn't active
+       if (recordingTimerRef.current) { 
         clearInterval(recordingTimerRef.current);
         recordingTimerRef.current = null;
       }
-      if (recorderStepRef.current === "recording") { // If stuck in recording state without active recorder
-        setRecorderStep("readyToRecord"); // Reset to a safe state
+      if (recorderStepRef.current === "recording") { 
+        setRecorderStep("readyToRecord"); 
       }
     }
   };
@@ -570,8 +585,9 @@ export default function WebVideoRecorderPage() {
   
   const resetRecorderInterface = useCallback(() => {
     console.log("RecorderPage: resetRecorderInterface called.");
-    stopRecording();
+    stopRecording(); // Ensure recorder is stopped
     
+    // Important: Detach from video element BEFORE cleaning up the stream
     if (videoRef.current) {
       videoRef.current.srcObject = null; videoRef.current.src = "";
       videoRef.current.removeAttribute('src'); videoRef.current.removeAttribute('srcObject');
@@ -583,19 +599,16 @@ export default function WebVideoRecorderPage() {
     
     cleanupRecordedVideo(); 
     cleanupThumbnails(); 
-    cleanupStream();
+    cleanupStream(); // Now safe to cleanup stream
 
     setIsLocallySaved(false); setTitle(''); setDescription(''); setKeywords(''); setFeatured(false);
     setRecordingDuration(0); setError(null); setUploadProgress(0); setIsProcessing(false);
     setIsVideoPlaying(false); setHasCameraPermission(null);
     
     setRecorderStep("initial"); 
-    console.log("RecorderPage: resetRecorderInterface finished. Step set to 'initial'. Requesting permissions again.");
-    // Trigger permission request after reset if conditions allow
-    if (!authLoading && isAdmin) {
-        requestPermissionsAndSetup();
-    }
-  }, [cleanupRecordedVideo, cleanupThumbnails, cleanupStream, setRecorderStep, authLoading, isAdmin, requestPermissionsAndSetup]);
+    console.log("RecorderPage: resetRecorderInterface finished. Step set to 'initial'.");
+    // The setup useEffect will pick up the "initial" state and call requestPermissionsAndSetup
+  }, [cleanupRecordedVideo, cleanupThumbnails, cleanupStream, setRecorderStep]);
   
   const handlePlayPause = () => {
     if(videoRef.current && (recorderStepRef.current === "review" || recorderStepRef.current === "thumbnailsReady")) {
