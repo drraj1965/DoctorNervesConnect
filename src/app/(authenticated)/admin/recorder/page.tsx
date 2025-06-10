@@ -12,14 +12,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
-import { Loader2, Video, Mic, Square, UploadCloud, AlertCircle, CheckCircle, CameraIcon as CameraIconLucide, RefreshCcw, Download, Image as ImageIconLucide, Sparkles } from "lucide-react"; // Renamed CameraIcon to CameraIconLucide
-import ReactPlayer from 'react-player/lazy';
+import { Loader2, Video, Mic, Square, UploadCloud, AlertCircle, CheckCircle, CameraIcon as CameraIconLucide, RefreshCcw, Download, Image as ImageIconLucide, Sparkles, Play } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
-import NextImage from 'next/image';
+import NextImage from 'next/image'; // Renamed to avoid conflict
 import { uploadFileToStorage, getFirebaseStorageDownloadUrl } from "@/lib/firebase/storage";
 import { saveVideoMetadataAction } from "./actions";
 import type { VideoMeta } from "@/types";
 import { useToast } from '@/hooks/use-toast';
+import ReactPlayer from "react-player"; // Added for review
 
 const MAX_RECORDING_MINUTES = 30;
 const NUM_THUMBNAILS_TO_GENERATE = 5;
@@ -31,16 +31,21 @@ export default function WebVideoRecorderPage() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null); // For live preview
   const playerRef = useRef<ReactPlayer | null>(null); // For ReactPlayer review
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const streamForRecorderRef = useRef<MediaStream | null>(null); // For the cloned stream
   const recordedChunksRef = useRef<Blob[]>([]);
 
+  // Core states
   const [isRecording, setIsRecording] = useState(false);
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
-  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null); // For ReactPlayer
   const [recordingDuration, setRecordingDuration] = useState(0);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
 
+  // Metadata and thumbnail states
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [keywords, setKeywords] = useState('');
@@ -50,28 +55,35 @@ export default function WebVideoRecorderPage() {
   const [selectedThumbnailIndex, setSelectedThumbnailIndex] = useState<number | null>(null);
   const [isCapturingThumbnail, setIsCapturingThumbnail] = useState(false);
   
+  // UI/Error states
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [isLocallySaved, setIsLocallySaved] = useState(false);
-  const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
 
+  // Simplified step management
+  const [currentStep, setCurrentStep] = useState<"initial" | "settingUp" | "readyToRecord" | "recording" | "review" | "thumbnailsReady" | "uploading" | "success" | "permissionDenied">("initial");
 
-  // Auth check and initial permission request
+  // Auth check
   useEffect(() => {
     if (!authLoading) {
       if (!isAdmin || !user) {
         toast({ variant: "destructive", title: "Access Denied", description: "You are not authorized or not logged in." });
         router.replace("/dashboard");
-        return;
-      }
-      if (hasCameraPermission === null) { // Only request if not already determined
-        requestPermissionsAndSetup();
       }
     }
+  }, [authLoading, isAdmin, user, router, toast]);
+
+  // Initial camera setup and permission request
+  useEffect(() => {
+    console.log(`RecorderPage: Initial Mount Effect - authLoading: ${authLoading}, isAdmin: ${isAdmin}, currentStep: ${currentStep}`);
+    if (!authLoading && isAdmin && (currentStep === "initial" || currentStep === "permissionDenied")) {
+      console.log("RecorderPage: Initial Mount Effect - Calling requestPermissionsAndSetup.");
+      requestPermissionsAndSetup();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, isAdmin, user, router, toast]); // hasCameraPermission removed to prevent loop on denial
+  }, [authLoading, isAdmin, currentStep]); // currentStep dependency carefully managed
 
   // Cleanup on unmount
   useEffect(() => {
@@ -80,33 +92,26 @@ export default function WebVideoRecorderPage() {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
         mediaRecorderRef.current.stop();
       }
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
-        mediaStreamRef.current = null;
-      }
-      if (recordedVideoUrl && recordedVideoUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(recordedVideoUrl);
-      }
-      potentialThumbnails.forEach(tUrl => {
-        if (tUrl && tUrl.startsWith('blob:')) URL.revokeObjectURL(tUrl);
-      });
-      if (recordingTimerRef.current) {
-        clearInterval(recordingTimerRef.current);
-      }
+      mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+      streamForRecorderRef.current?.getTracks().forEach(track => track.stop());
+      if (recordedVideoUrl && recordedVideoUrl.startsWith('blob:')) URL.revokeObjectURL(recordedVideoUrl);
+      potentialThumbnails.forEach(tUrl => { if (tUrl && tUrl.startsWith('blob:')) URL.revokeObjectURL(tUrl); });
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty dependency array: runs only on mount and unmount
+  }, []);
 
   const requestPermissionsAndSetup = useCallback(async () => {
-    console.log("RecorderPage: requestPermissionsAndSetup invoked.");
-    setError(null);
-    setHasCameraPermission(null);
-    setUploadSuccess(false);
-
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
+    console.log("RecorderPage: requestPermissionsAndSetup called.");
+    if (currentStep === "settingUp") {
+      console.log("RecorderPage: requestPermissionsAndSetup - Bailing: Already in 'settingUp' step.");
+      return;
     }
+    setCurrentStep("settingUp");
+    setError(null); setHasCameraPermission(null); setUploadSuccess(false);
+
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+    mediaStreamRef.current = null;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -116,47 +121,52 @@ export default function WebVideoRecorderPage() {
       
       mediaStreamRef.current = stream;
       setHasCameraPermission(true);
-      console.log("RecorderPage: Permissions granted, stream acquired.");
+      console.log("RecorderPage: Permissions granted, stream acquired:", stream.id);
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => { // Wait for metadata to ensure dimensions are known
-          videoRef.current?.play().catch(e => console.warn("Live preview play error on setup:", e));
-        }
+        videoRef.current.oncanplay = () => { // Changed from onloadedmetadata
+          console.log("RecorderPage: Live preview 'canplay' event fired. Video dimensions:", videoRef.current?.videoWidth, "x", videoRef.current?.videoHeight);
+          if (videoRef.current?.videoWidth && videoRef.current?.videoHeight) { // Ensure dimensions are valid
+             setCurrentStep("readyToRecord");
+          } else {
+             console.warn("RecorderPage: Live preview 'canplay' but dimensions are 0. Retrying or erroring.");
+             // Could add a small delay and recheck, or show an error
+          }
+        };
         videoRef.current.onerror = (e) => {
             console.error("RecorderPage: Video element error during live preview setup:", videoRef.current?.error, e);
-            setError("Live preview error. Please refresh or check camera permissions.");
-            setHasCameraPermission(false);
+            setError("Video element error. Please refresh or check permissions.");
+            setCurrentStep("permissionDenied");
         };
+        await videoRef.current.play().catch(e => console.warn("Live preview play error on setup:", e));
       }
     } catch (err) {
       console.error("RecorderPage: Error in requestPermissionsAndSetup:", err);
       setError(`Camera/mic access failed: ${err instanceof Error ? err.message : String(err)}.`);
-      setHasCameraPermission(false);
+      setCurrentStep("permissionDenied");
     }
-  }, []);
+  }, [currentStep]); // currentStep in dependency to prevent re-entry if already setting up
 
   const getSupportedMimeType = () => {
     const types = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
     for (const type of types) { if (MediaRecorder.isTypeSupported(type)) return type; }
-    return 'video/webm'; // Fallback
+    return 'video/webm';
   };
 
   const startRecording = () => {
-    if (!mediaStreamRef.current || !mediaStreamRef.current.active || hasCameraPermission !== true) {
+    console.log("RecorderPage: startRecording called.");
+    if (!mediaStreamRef.current || !mediaStreamRef.current.active || !hasCameraPermission) {
       setError("Camera not ready or permission denied. Please allow camera access.");
-      requestPermissionsAndSetup();
-      return;
+      requestPermissionsAndSetup(); return;
     }
-    console.log("RecorderPage: Starting recording...");
     
-    // Ensure live preview is active with the correct stream
     if (videoRef.current && videoRef.current.srcObject !== mediaStreamRef.current) {
+        console.log("RecorderPage: startRecording - Configuring videoRef for live preview during recording.");
         videoRef.current.srcObject = mediaStreamRef.current;
-        videoRef.current.play().catch(e=>console.warn("Error re-playing live preview on record start:",e));
+        videoRef.current.play().catch(e=>console.warn("Error re-playing live preview for recording start:",e));
     }
     
-    // Reset previous recording data
     recordedChunksRef.current = [];
     setRecordedVideoBlob(null);
     if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl); setRecordedVideoUrl(null);
@@ -167,55 +177,83 @@ export default function WebVideoRecorderPage() {
 
     const mimeType = getSupportedMimeType();
     try {
-      // Use the existing mediaStreamRef.current directly, as in the user's example
-      mediaRecorderRef.current = new MediaRecorder(mediaStreamRef.current, { mimeType });
+      if (streamForRecorderRef.current) { // Clean up any old cloned stream
+        streamForRecorderRef.current.getTracks().forEach(track => track.stop());
+      }
+      streamForRecorderRef.current = mediaStreamRef.current.clone(); // Clone the stream
+      console.log("RecorderPage: Cloned mediaStream for recorder. Original stream ID:", mediaStreamRef.current.id, "Cloned stream ID:", streamForRecorderRef.current.id);
+
+      mediaRecorderRef.current = new MediaRecorder(streamForRecorderRef.current, { mimeType });
+      
+      mediaRecorderRef.current.onstart = () => {
+        console.log("RecorderPage: MediaRecorder onstart. Actual MIME type:", mediaRecorderRef.current?.mimeType);
+        // Ensure live preview is still using the original stream
+        if (videoRef.current && mediaStreamRef.current && videoRef.current.srcObject !== mediaStreamRef.current) {
+            console.warn("RecorderPage: srcObject changed during onstart, resetting to original live stream for preview.");
+            videoRef.current.srcObject = mediaStreamRef.current;
+            videoRef.current.play().catch(e => console.warn("Error re-playing live preview onstart fix:", e));
+        }
+      };
+
       mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) recordedChunksRef.current.push(event.data);
+        if (event.data.size > 0) {
+          console.log("RecorderPage: MediaRecorder ondataavailable, chunk size:", event.data.size, "type:", event.data.type);
+          recordedChunksRef.current.push(event.data);
+        }
       };
       mediaRecorderRef.current.onstop = () => {
-        console.log("RecorderPage: MediaRecorder.onstop triggered.");
+        console.log("RecorderPage: MediaRecorder onstop. Chunks collected:", recordedChunksRef.current.length);
         if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
         
+        if (streamForRecorderRef.current) { // Stop tracks of the cloned stream
+          streamForRecorderRef.current.getTracks().forEach(track => {
+            console.log(`RecorderPage: Stopping track on cloned stream: ${track.kind} - ${track.label}`);
+            track.stop();
+          });
+          console.log("RecorderPage: Cloned stream tracks stopped.");
+          streamForRecorderRef.current = null; // Clear the ref
+        }
+
         if (recordedChunksRef.current.length === 0) {
           setError("No video data was recorded. Please try again.");
-          setIsRecording(false); return;
+          setCurrentStep("readyToRecord"); return;
         }
         const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+        console.log("RecorderPage: Recorded video blob created. Size:", blob.size, "Type:", blob.type);
         setRecordedVideoBlob(blob);
         const url = URL.createObjectURL(blob);
-        setRecordedVideoUrl(url);
-        setIsRecording(false);
-        // Detach live stream from native player if it's still there
-        if(videoRef.current) videoRef.current.srcObject = null;
+        setRecordedVideoUrl(url); // This will trigger ReactPlayer
+        setCurrentStep("review");
+        if (videoRef.current) videoRef.current.srcObject = null; // Detach live stream from native player
       };
       mediaRecorderRef.current.onerror = (event) => {
         console.error("RecorderPage: MediaRecorder error:", event);
         setError(`Recording error: ${(event as any)?.error?.name || 'Unknown MediaRecorder error'}`);
         if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-        setIsRecording(false);
+        setCurrentStep("readyToRecord");
       };
 
-      mediaRecorderRef.current.start(1000); // timeslice for ondataavailable
-      setIsRecording(true);
+      console.log("RecorderPage: MediaRecorder.start(1000) called with cloned stream.");
+      mediaRecorderRef.current.start(1000);
+      setCurrentStep("recording");
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = setInterval(() => setRecordingDuration(prev => prev + 1), 1000);
-      console.log("RecorderPage: MediaRecorder started.");
     } catch (e) {
       console.error("RecorderPage: Failed to init/start MediaRecorder:", e);
       setError(`Recorder start failed: ${e instanceof Error ? e.message : String(e)}.`);
-      setIsRecording(false);
+      setCurrentStep("readyToRecord");
     }
   };
 
   const stopRecording = () => {
     console.log("RecorderPage: stopRecording called.");
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.stop(); // This will trigger onstop
-      // Tracks on mediaStreamRef.current will be stopped in onstop OR if user resets/navigates away.
-      // For the example's directness, we'll let onstop handle blob creation, then stream tracks can be stopped by reset.
+      console.log("RecorderPage: MediaRecorder is recording, calling stop().");
+      mediaRecorderRef.current.stop();
     } else {
+      console.log("RecorderPage: MediaRecorder not recording or not initialized. Clearing timer.");
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-      setIsRecording(false);
+      setCurrentStep("readyToRecord");
     }
   };
 
@@ -226,7 +264,7 @@ export default function WebVideoRecorderPage() {
   };
 
   const generateSingleThumbnail = useCallback(async (videoObjectUrl: string, timestamp: number): Promise<{ dataUrl: string; blob: Blob } | null> => {
-    console.log(`RecorderPage: generateSingleThumbnail called for URL (first 30char): ${videoObjectUrl.substring(0,30)} at time: ${timestamp}`);
+    console.log(`RecorderPage: generateSingleThumbnail for URL (first 30char): ${videoObjectUrl.substring(0,30)} at time: ${timestamp}`);
     return new Promise((resolve) => {
         const tempVideoElement = document.createElement('video');
         tempVideoElement.muted = true; tempVideoElement.crossOrigin = "anonymous";
@@ -317,26 +355,32 @@ export default function WebVideoRecorderPage() {
     if (!thumbnailBlobToUpload) { setError("Selected thumbnail data is missing."); return; }
     if (!title.trim()) { setError("Video title is required."); return; }
 
-    setIsUploading(true); setUploadProgress(0); setUploadSuccess(false);
+    setIsUploading(true); setUploadProgress(0); setUploadSuccess(false); setCurrentStep("uploading");
 
     const videoId = uuidv4(); const timestamp = Date.now();
     const safeFileTitle = title.replace(/[^a-z0-9_.\-]+/gi, '_').toLowerCase() || videoId;
     const videoExtension = getSupportedMimeType().split('/')[1]?.split(';')[0] || 'webm';
     const videoFilename = `${safeFileTitle}_${timestamp}.${videoExtension}`;
     const thumbnailFilename = `thumb_${safeFileTitle}_${timestamp}.jpg`;
-    const videoStoragePath = `videos/${user.uid}/${videoFilename}`;
-    const thumbnailStoragePath = `thumbnails/${user.uid}/${thumbnailFilename}`;
+    
+    const videoDirectoryPath = `videos/${user.uid}`;
+    const thumbnailDirectoryPath = `thumbnails/${user.uid}`;
+
+    console.log(`RecorderPage: Preparing to upload video. Dir: ${videoDirectoryPath}, Filename: ${videoFilename}`);
+    console.log(`RecorderPage: Preparing to upload thumbnail. Dir: ${thumbnailDirectoryPath}, Filename: ${thumbnailFilename}`);
 
     try {
-      await uploadFileToStorage(videoStoragePath, recordedVideoBlob, undefined, (snapshot) => {
+      const uploadedVideoStoragePath = await uploadFileToStorage(videoDirectoryPath, recordedVideoBlob, videoFilename, (snapshot) => {
         setUploadProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 50));
       });
-      const videoUrl = await getFirebaseStorageDownloadUrl(videoStoragePath);
+      const videoUrl = await getFirebaseStorageDownloadUrl(uploadedVideoStoragePath);
+      console.log("RecorderPage: Video uploaded to", videoUrl);
 
-      await uploadFileToStorage(thumbnailStoragePath, thumbnailBlobToUpload, undefined, (snapshot) => {
+      const uploadedThumbnailStoragePath = await uploadFileToStorage(thumbnailDirectoryPath, thumbnailBlobToUpload, thumbnailFilename, (snapshot) => {
         setUploadProgress(Math.round(50 + (snapshot.bytesTransferred / snapshot.totalBytes) * 50));
       });
-      const thumbnailUrl = await getFirebaseStorageDownloadUrl(thumbnailStoragePath);
+      const thumbnailUrl = await getFirebaseStorageDownloadUrl(uploadedThumbnailStoragePath);
+      console.log("RecorderPage: Thumbnail uploaded to", thumbnailUrl);
 
       const metadata: VideoMeta = {
         id: videoId, doctorId: user.uid,
@@ -346,35 +390,39 @@ export default function WebVideoRecorderPage() {
         tags: keywords.split(',').map(k => k.trim()).filter(Boolean),
         createdAt: new Date().toISOString(), 
         viewCount: 0, likeCount: 0, commentCount: 0, featured: featured,
-        permalink: `/videos/${videoId}`, storagePath: videoStoragePath, thumbnailStoragePath: thumbnailStoragePath,
+        permalink: `/videos/${videoId}`, 
+        storagePath: uploadedVideoStoragePath, 
+        thumbnailStoragePath: uploadedThumbnailStoragePath,
         videoSize: recordedVideoBlob.size, videoType: recordedVideoBlob.type, comments: [],
       };
       
+      console.log("RecorderPage: Calling saveVideoMetadataAction with:", metadata);
       const result = await saveVideoMetadataAction(metadata);
 
       if (result.success && result.videoId) {
         toast({ title: "Upload Successful!", description: `Video "${title}" is now available.` });
-        setUploadSuccess(true);
+        setUploadSuccess(true); setCurrentStep("success");
       } else { throw new Error(result.error || "Failed to save video metadata."); }
     } catch (uploadError: any) {
+      console.error("RecorderPage: Upload or metadata save failed:", uploadError);
       setError(`Upload failed: ${uploadError.message}`);
+      setCurrentStep("thumbnailsReady"); // Revert to a step where user can retry or correct
     } finally { setIsUploading(false); }
   }, [
     user, isAdmin, recordedVideoBlob, potentialThumbnailBlobs, selectedThumbnailIndex, title, description, 
-    recordingDuration, keywords, featured, doctorProfile, toast
+    recordingDuration, keywords, featured, doctorProfile, toast // Removed setCurrentStep from here
   ]); 
   
   const resetEntirePage = () => {
-    stopRecording(); // Ensure recorder is stopped and stream tracks are released by its onstop
+    stopRecording(); 
     
-    // Explicitly stop stream tracks if still active
-    if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
-        mediaStreamRef.current = null;
-    }
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+    mediaStreamRef.current = null;
+    streamForRecorderRef.current?.getTracks().forEach(track => track.stop());
+    streamForRecorderRef.current = null;
+
     if (videoRef.current) {
-      videoRef.current.srcObject = null;
-      videoRef.current.src = "";
+      videoRef.current.srcObject = null; videoRef.current.src = "";
       videoRef.current.load();
     }
     
@@ -386,18 +434,19 @@ export default function WebVideoRecorderPage() {
     setSelectedThumbnailIndex(null); setTitle(''); setDescription(''); setKeywords('');
     setFeatured(false); setRecordingDuration(0); setError(null); setUploadProgress(0);
     setIsRecording(false); setIsUploading(false); setIsLocallySaved(false);
-    setHasCameraPermission(null); // Will trigger permission request on next effect run
+    setHasCameraPermission(null); 
     setUploadSuccess(false);
-    requestPermissionsAndSetup(); // Re-initialize camera for a new session
+    setCurrentStep("initial"); // This will trigger the initial setup useEffect
   };
   
-  if (authLoading && hasCameraPermission === null) {
+  if (authLoading && currentStep === "initial") {
     return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-primary" /> <span className="ml-2">Initializing...</span></div>;
   }
 
-  const showLiveFeed = !isRecording && !recordedVideoUrl && hasCameraPermission === true;
-  const showRecordingFeed = isRecording && hasCameraPermission === true;
-  const showReviewInterface = recordedVideoUrl && !isUploading && !uploadSuccess;
+  const showLiveFeed = (currentStep === "readyToRecord" || currentStep === "recording") && hasCameraPermission;
+  const showReviewInterface = (currentStep === "review" || currentStep === "thumbnailsReady") && recordedVideoUrl && !isUploading && !uploadSuccess;
+  const showInitialOrPermissionDenied = currentStep === "initial" || currentStep === "permissionDenied" || currentStep === "settingUp";
+
 
   return (
     <div className="container mx-auto py-8">
@@ -410,7 +459,7 @@ export default function WebVideoRecorderPage() {
         {error && <Alert variant="destructive"><AlertCircle className="h-4 w-4" /> <AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
         {uploadSuccess && <Alert variant="default" className="bg-green-100 border-green-400 text-green-700 dark:bg-green-900/30 dark:text-green-300"><CheckCircle className="h-4 w-4" /> <AlertTitle>Success!</AlertTitle><AlertDescription>Video uploaded. You can record another or manage content.</AlertDescription></Alert>}
 
-        {hasCameraPermission === false && (
+        {currentStep === "permissionDenied" && (
            <Alert variant="destructive" className="shadow-md">
             <AlertCircle className="h-4 w-4" /> <AlertTitle>Camera/Microphone Access Denied</AlertTitle>
             <AlertDescription> Please enable permissions in your browser. <Button onClick={requestPermissionsAndSetup} variant="link" size="sm" className="p-0 h-auto text-destructive-foreground underline">Retry Permissions</Button></AlertDescription>
@@ -418,8 +467,8 @@ export default function WebVideoRecorderPage() {
         )}
         
         <div className="relative aspect-video bg-slate-900 rounded-md overflow-hidden border border-border shadow-inner">
-          {/* Native video for live preview only */}
-          <video ref={videoRef} playsInline autoPlay muted className={`w-full h-full object-contain ${(showLiveFeed || showRecordingFeed) ? 'block' : 'hidden'}`} />
+           {/* Native video for live preview */}
+          <video ref={videoRef} playsInline autoPlay muted className={`w-full h-full object-contain ${(showLiveFeed || showInitialOrPermissionDenied) ? 'block' : 'hidden'}`} />
           
           {/* ReactPlayer for review */}
           {showReviewInterface && recordedVideoUrl && (
@@ -429,14 +478,14 @@ export default function WebVideoRecorderPage() {
               controls
               width="100%"
               height="100%"
-              playing={true}
-              onError={(e: any) => { console.error("ReactPlayer error:", e); setError("Error playing recorded video."); }}
+              playing={true} // Autoplay review
+              onError={(e: any) => { console.error("ReactPlayer error:", e); setError("Error playing recorded video for review."); }}
             />
           )}
 
-          {!hasCameraPermission && !error && 
+          {currentStep === "settingUp" && 
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 text-white">
-              <Loader2 className="h-10 w-10 animate-spin mb-3"/> <p>Awaiting Camera Permissions...</p>
+              <Loader2 className="h-10 w-10 animate-spin mb-3"/> <p>Setting up camera...</p>
             </div>
           }
            {isRecording && 
@@ -447,7 +496,7 @@ export default function WebVideoRecorderPage() {
         </div>
         
         <div className="space-y-3">
-          {!isRecording && !recordedVideoUrl && hasCameraPermission && !uploadSuccess && (
+          {currentStep === "readyToRecord" && !isRecording && !recordedVideoUrl && (
             <Button onClick={startRecording} className="w-full gap-2 text-lg py-3 bg-green-600 hover:bg-green-700 shadow-md"><Mic /> Start Recording</Button>
           )}
           {isRecording && (
@@ -480,13 +529,13 @@ export default function WebVideoRecorderPage() {
                         ) : null
                         ))}
                     </div>
-                    {selectedThumbnailIndex === null && <p className="text-xs text-destructive mt-1">Please select a thumbnail.</p>}
+                    {currentStep==="thumbnailsReady" && selectedThumbnailIndex === null && <p className="text-xs text-destructive mt-1">Please select a thumbnail to proceed.</p>}
                 </div>
               )}
             </div>
         )}
 
-        {showReviewInterface && selectedThumbnailIndex !== null && !isUploading && !uploadSuccess && (
+        {currentStep === "thumbnailsReady" && selectedThumbnailIndex !== null && !isUploading && !uploadSuccess && (
             <form onSubmit={(e) => { e.preventDefault(); handleUploadToFirebase(); }} className="space-y-4 pt-6 border-t border-border" id="web-video-upload-form">
                 <h3 className="text-xl font-semibold font-headline">Video Details</h3>
                 <div className="space-y-1"><Label htmlFor="title">Title <span className="text-destructive">*</span></Label><Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} required /></div>
@@ -507,13 +556,13 @@ export default function WebVideoRecorderPage() {
             </form>
         )}
 
-        {isUploading && (
+        {currentStep === "uploading" && (
             <div className="space-y-2 pt-4 border-t border-border">
                 <Label>Upload Progress</Label><Progress value={uploadProgress} className="w-full h-3 shadow-inner" /><p className="text-sm text-center text-muted-foreground">{Math.round(uploadProgress)}%</p>
             </div>
         )}
       </CardContent>
-      {(hasCameraPermission || recordedVideoUrl) && !isUploading && !uploadSuccess && (
+      {(currentStep !== "initial" && currentStep !== "settingUp" && currentStep !== "permissionDenied" && currentStep !== "uploading" && !uploadSuccess) && (
       <CardFooter className="pt-4 border-t">
          <Button onClick={resetEntirePage} variant="outline" className="w-full gap-2 shadow-sm"><RefreshCcw /> Reset Recorder & Camera</Button>
       </CardFooter>
@@ -522,5 +571,4 @@ export default function WebVideoRecorderPage() {
     </div>
   );
 }
-
     
