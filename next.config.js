@@ -51,4 +51,12 @@ const nextConfig = {
   webpack: (config) => config,
 };
 
-module.exports = nextConfig;
+// next.config.js
+module.exports = {
+  experimental: {
+    allowedDevOrigins: [
+      "https://localhost:9002",
+      "https://musical-succotash-x59q546jr9qx39x4v-9002.app.github.dev" // Add your Codespace URL here
+    ]
+  },
+};
