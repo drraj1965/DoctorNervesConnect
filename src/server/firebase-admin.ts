@@ -2,28 +2,24 @@
 
 import { initializeApp, cert, getApps, App } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import path from "path";
-import fs from "fs";
 
 let app: App | undefined;
 let db: FirebaseFirestore.Firestore | undefined;
 
 function getServiceAccount() {
-  const serviceAccountPath = path.resolve(
-    process.cwd(),
-    "server",
-    "secrets",
-    "serviceAccountKey.json"
-  );
+  const keyBase64 = process.env.FIREBASE_ADMIN_KEY;
 
-  if (!fs.existsSync(serviceAccountPath)) {
-    throw new Error(
-      `❌ Firebase service account key not found at ${serviceAccountPath}`
-    );
+  if (!keyBase64) {
+    throw new Error("❌ Missing FIREBASE_ADMIN_KEY environment variable.");
   }
 
-  const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
-  return serviceAccount;
+  try {
+    const decoded = Buffer.from(keyBase64, "base64").toString("utf-8");
+    const serviceAccount = JSON.parse(decoded);
+    return serviceAccount;
+  } catch (error) {
+    throw new Error("❌ Failed to parse FIREBASE_ADMIN_KEY. Ensure it is base64-encoded.");
+  }
 }
 
 export function getDb(): FirebaseFirestore.Firestore {
